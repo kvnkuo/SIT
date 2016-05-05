@@ -681,6 +681,7 @@ remove.equality.constraints.old <- function(qp.data)
 	
 ###############################################################################
 # Run linear least squares regression with constraints
+#' @export 
 ###############################################################################
 lm.constraint <- function
 (
@@ -824,7 +825,7 @@ find.maximum.distance.point <- function
 	x=1:len(y)
 )
 {		
-	allCoord = rbind(y, x)
+	allCoord = rbind(vec(y), vec(x))
 		
 	firstPoint = allCoord[,1]
 	lineVec = allCoord[,len(y)] - firstPoint

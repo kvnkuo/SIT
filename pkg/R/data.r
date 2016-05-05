@@ -152,8 +152,10 @@ extract.table.from.webpage <- function
     
     # find start/end of table
     pos0 = tail(gregexpr('<table', substr(txt, 1, pos1))[[1]], 1)
+	if(pos0 == -1) pos0 = tail(gregexpr('<tbody', substr(txt, 1, pos1))[[1]], 1)
     if(pos0 == -1) pos0 = pos1
     pos2 = head(gregexpr('</table', substr(txt, pos1, nchar(txt)))[[1]], 1)
+	if(pos2 == -1) pos2 = head(gregexpr('</tbody', substr(txt, pos1, nchar(txt)))[[1]], 1)
     if(pos2 == -1) pos2 = nchar(txt)+1
     temp =  substr(txt, pos0, pos1 + pos2 - 2)
   
@@ -433,14 +435,35 @@ get.CRB.test <- function()
 ###############################################################################
 dow.jones.components <- function()
 {
+  url = 'http://money.cnn.com/data/dow30/'
+  txt = join(readLines(url))
+  
+  # extract links
+  temp = gsub(pattern = '">', replacement = '<td>', txt, perl = TRUE)
+  temp = gsub(pattern = '</a>', replacement = '</td>', temp, perl = TRUE) 
+
+  # extract table from this page
+  temp = extract.table.from.webpage(temp, 'Volume', has.header = T)
+  trim(temp[,'Company'])
+}	
+
+dow.jones.components.0 <- function()
+{
   url = 'http://finance.yahoo.com/q/cp?s=^DJI+Components'
   txt = join(readLines(url))
 
   # extract table from this page
   temp = extract.table.from.webpage(txt, 'Volume', has.header = T)
-  tickers = temp[, 'Symbol']
+  temp[, 'Symbol']
+}
 
-  return(tickers)
+dow.jones.components.1 <- function()
+{
+  load.packages('readxl,httr')
+  dir.create(paste(getwd(), 'temp', sep='/'), F)
+  GET('http://www.djaverages.com/?go=export-components&symbol=DJI', write_disk('temp/DJI.xls', overwrite=TRUE))
+  temp = read_excel('temp/DJI.xls')
+  temp$Ticker
 }
   
 ###############################################################################
@@ -887,6 +910,11 @@ extend.data.proxy <- function(data, data.proxy = NULL, proxy.filename = 'data.pr
 # Leveraged series
 ###############################################################################  
 # Create Leveraged series with data from the unlevereged.
+#
+# Please use only with Adjusted time series. For example create.leveraged(data$QQQ, leverage=2)
+# will produce erroneous values because QQQ had 2: 1 Stock Split on Mar 20, 2000 
+# Hence at 2x leverage the value goes to zero.
+#
 # @example create.leveraged(tlt, 2)
 # @example extend.data(data$UBT, create.leveraged(data$TLT, leverage=2), scale=T)
 # @example extend.data(data$TMF, create.leveraged(data$TLT, leverage=3), scale=T)
@@ -1054,9 +1082,9 @@ getSymbols.fxhistoricaldata <- function
   # read all Symbols
   for (i in 1:len(Symbols)) { 
     if(download) {
-      # http://www.fxhistoricaldata.com/download/EURUSD?t=hour
-      url = paste('http://www.fxhistoricaldata.com/download/', Symbols[i], '?t=', type, sep='')
-      filename = paste(temp.folder, '/', Symbols[i], '_', type, '.zip', sep='')     
+      # http://www.fxhistoricaldata.com/download/EURUSD_hour.zip
+      url = paste('http://www.fxhistoricaldata.com/download/', Symbols[i], '_', type, '.zip', sep='')
+      filename = paste(temp.folder, '/', Symbols[i], '_', type, '.zip', sep='')
       download.file(url, filename,  mode = 'wb')
       
       # unpack
@@ -1156,7 +1184,47 @@ DEXSZUS     Switzerland/U.S.
 }
 
 
+###############################################################################
+# Download Strategic Portfolios from wealthsimple.com
+# 
+#http://faq.wealthsimple.com/article/121-how-has-the-risk-level-1-portfolio-performed
+#http://faq.wealthsimple.com/article/130-how-has-the-risk-level-10-portfolio-performed
+#http://faq.wealthsimple.com/article/127-how-has-the-risk-level-7-portfolio-performed
+#' @export 
+###############################################################################     
+wealthsimple.portfolio = function(portfolio.number = 10) {
+	# download
+	url = paste0('http://faq.wealthsimple.com/article/', 120+portfolio.number, '-how-has-the-risk-level-',portfolio.number,'-portfolio-performed')
+	txt = join(readLines(url))
+  
+	# extract
+	temp = extract.table.from.webpage(txt, 'Breakdown', has.header = F)
+
+	# parse
+	temp = gsub(pattern = '%', replacement = '', temp)
+	temp  = trim(temp[,c(2,4)])
+	temp  = temp[!is.na(temp[,1]),]
+
+	# create output
+	value = as.numeric(temp[,2])
+	names(value) = temp[,1]
+	value
+}
+
  
+wealthsimple.portfolio.test = function() {
+	# create list of all portolios
+	portfolios = list()
+	for(i in 1:10)
+		portfolios[[i]] = wealthsimple.portfolio(i)
+		
+	portfolios = t(sapply(portfolios, identity))
+	
+	# look at evolution of mixes
+	plota.stacked(1:10, portfolios/100, flip.legend = T, type='s', xaxp=c(1,10,9), las=1,
+		main='Wealthsimple Transition Matrix', xlab='Risk Portfolio')
+}	
+	
 
 ###############################################################################
 # getSymbols interface to tradingblox free futures and forex data
@@ -1173,7 +1241,8 @@ getSymbols.TB <- function(
   download = FALSE,
   type = c('Both', 'Futures', 'Forex'),
   rm.index =  'PB',   # remove Pork Bellies because not traded
-  clean = FALSE
+  clean = FALSE,
+  custom.adjustments = TRUE
 ) 
 {
   # download zip archive
@@ -1271,6 +1340,38 @@ cat('\t\t\t Missing data for ', symbol, '\n');
   # fix DX time series - fixed by the Trading Blox
   # if(!is.null(data$DX)) data$DX['::2007:04:04', 'Unadjusted'] = coredata(data$DX['::2007:04:04']$Unadjusted * 10)
   
+ if( custom.adjustments ) {
+	#*****************************************************************
+	# filename = 'temp\\Futures\\LH_0_I0B.TXT'
+	# fr <- read.csv(filename, header = FALSE) 
+	# fr <- make.xts(fr[,-1], as.Date(as.character(fr[,1]),'%Y%m%d'))     
+	# colnames(fr) <- spl('Open,High,Low,Close,Volume,OpenInterest,DeliveryMonth,Unadjusted')
+	# LH = fr
+	# LH$DiffClose = LH$Close - mlag(LH$Close)
+	# LH$DiffUnadjusted = LH$Unadjusted - mlag(LH$Unadjusted)
+	# LH = LH['2000:03:08::2000:03:15',spl('Close,DeliveryMonth,Unadjusted,DiffClose,DiffUnadjusted')]
+	# LH
+	# 
+	#              Close DeliveryMonth Unadjusted DiffClose DiffUnadjusted
+	# 2000-03-08 187.150        200004     59.450    -0.150         -0.150
+	# 2000-03-09 188.450        200004     60.750     1.300          1.300
+	# 2000-03-10 189.750        200004     62.050     1.300          1.300
+	# 2000-03-13 189.600        200006     71.175    -0.150          9.125
+	# 2000-03-14 189.575        200006     71.150    -0.025         -0.025
+	# 2000-03-15 189.325        200006     70.900    -0.250         -0.250
+	# 
+	# There is a roll 2000-03-10, we switch from contract expiring on 200004 to contract expiring on 200006
+	# The returns on 
+	# 2000-03-09: 1.300 / 59.450
+	# 2000-03-10: 1.300 / 60.750
+	# # for the first day after roll, let's use denominator as the price of new contract 
+	# # because numerator is the change in price of new contract
+	# # the 71.175 -  -0.150 is the price on new contract on 2000-03-10
+	# 2000-03-13: -0.150 / (71.175 -  -0.150)
+	# 2000-03-14: -0.025 / 71.175
+	# 2000-03-15: -0.025 / 71.150 
+	#*****************************************************************
+ 
   #*****************************************************************
   # To compute returns and backtest, recreate each futures series:
   #
@@ -1279,6 +1380,70 @@ cat('\t\t\t Missing data for ', symbol, '\n');
   #           unadjusted-futures[t-1] 
   #******************************************************************       
   for(i in data$symbolnames[data$symbol.groups != 'Forex']) {
+    # find rolls; alternatively can use DeliveryMonth field
+    spot = as.vector(data[[i]]$Unadjusted)
+      dspot = spot - mlag(spot)
+    futures = as.vector(data[[i]]$Adjusted)
+      dfutures = futures - mlag(futures)
+    index = which(round(dspot - dfutures,4) != 0 )
+  
+    # for return calculations set spot on the roll to the new contract price
+	spot.adjust.roll = spot
+      spot.adjust.roll[(index-1)] = spot.adjust.roll[index] - dfutures[index]
+      
+    # compute returns
+    reta = dfutures / mlag(spot.adjust.roll)
+      reta[1] = 0
+      n = len(spot)
+    
+    new.series = cumprod(1 + reta)
+	# make new series match the last spot price
+    data[[i]]$Adjusted = data[[i]]$Close = spot[n] * new.series / new.series[n]
+  }
+}  
+  
+  #*****************************************************************
+  # Done 
+  #******************************************************************             
+  if (!auto.assign) {
+    return(fr)
+  } else {    
+    return(env)
+  } 
+}
+
+###############################################################################     
+# Data contains historical time series for both 
+# * Spot ( Unadjusted - unadjusted-futures ) and 
+# * Future ( Adjusted - back-adjusted-futures)
+#
+# First step, I updated Spot to include roll yield (i.e. spot.adjust.roll)
+# Next, I computed returns as change in futures relative to the spot.adjust.roll level
+#I.e. return is
+#
+# (unadjusted-futures[t-1] + (back-adjusted-futures[t] - back-adjusted-futures[t-1])) 
+# ------------------------------------------------------------------------------------  - 1
+# unadjusted-futures[t-1] 
+#
+#   Change in back-adjusted-futures
+# = --------------------------------
+#   Prior Unadjusted-futures level (which i adjusted for roll yield)
+#
+# http://www.automated-trading-system.com/crude-oil-contango-and-roll-yield-for-commodity-trading/
+###############################################################################     
+getSymbols.TB.test = function() {
+	filename = 'temp/Futures/CL20_I0B.TXT'
+	i = 'CL'
+	data = env()
+      fr <- read.csv(filename, header = FALSE) 
+      fr <- make.xts(fr[,-1], as.Date(as.character(fr[,1]),'%Y%m%d'))     
+      colnames(fr) <- spl('Open,High,Low,Close,Volume,OpenInterest,DeliveryMonth,Unadjusted')[1:ncol(fr)]
+      fr$Adjusted = fr$Close
+      data[[i]] = fr
+
+	# Unadjusted is Spot (unadjusted-futures)
+	# Adjusted is Close is Future (back-adjusted-futures)
+
     # adjust spot for roll overs
     spot = as.vector(data[[i]]$Unadjusted)
       dspot = spot - mlag(spot)
@@ -1295,23 +1460,21 @@ cat('\t\t\t Missing data for ', symbol, '\n');
       n = len(spot)
     
     new.series = cumprod(reta)
-    data[[i]]$Close = spot[n] * new.series / new.series[n]    
-    data[[i]]$Adjusted  = data[[i]]$Close
-  }
-  
-  
-  #*****************************************************************
-  # Done 
-  #******************************************************************             
-  if (!auto.assign) {
-    return(fr)
-  } else {    
-    return(env)
-  } 
+    Close = spot[n] * new.series / new.series[n]    
+    
+	plot.data = as.xts(list(
+		Unadjusted = data[[i]]$Unadjusted, 
+		Adjusted = data[[i]]$Adjusted,
+		Implied.Close = make.xts(Close, index(data[[i]]))
+	))
+
+png(filename = 'plot_CL_2009.png', width = 600, height = 500, units = 'px', pointsize = 12, bg = 'white')			    
+
+	plota.matplot( scale.one(plot.data['2009']), main='Crude oil, CL - 2009')
+	
+dev.off()	
+	
 }
-
-
-
 
 
 ###############################################################################
@@ -1329,24 +1492,38 @@ cat('\t\t\t Missing data for ', symbol, '\n');
 get.fama.french.data <- function(
   name = c('F-F_Research_Data_Factors', 'F-F_Research_Data_Factors'),
   periodicity = c('days','weeks', 'months'),
-  download = FALSE,
-  clean = FALSE
+  force.download = FALSE,
+  clean = FALSE,
+  file.suffix = '_TXT'
+) 
+{
+	warning('get.fama.french.data is depreciated as of Apr 25, 2016 please use data.ff function instead')
+	data.ff(name, periodicity, force.download, clean, file.suffix)
+}
+
+#' @export 
+data.ff <- function(
+  name = c('F-F_Research_Data_Factors', 'F-F_Research_Data_Factors'),
+  periodicity = c('days','weeks', 'months'),
+  force.download = FALSE,
+  clean = FALSE,
+  file.suffix = '_TXT'
 ) 
 {
   # map periodicity
-  map = c('_daily', '_weekly', '')
-    names(map) = c('days','weeks', 'months')
+  map = c(days = '_daily', weeks = '_weekly', months = '')
   
   # url
   period = ifna(map[periodicity[1]], periodicity[1])
-  filename.zip = paste(name[1], period, '.zip', sep='')
+  filename.zip = paste(name[1], period, file.suffix, '.zip', sep='')
   filename.txt = paste(name[1], period, '.txt', sep='')
   url = paste('http://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/', filename.zip, sep='')
         
   # download zip archive
-  if(download) {
+  if( !file.exists(filename.zip) || force.download) 
     download.file(url, filename.zip)
-  }
+
+## download using curl  !!!!
 
   # setup temp folder
   temp.folder = paste(getwd(), 'temp', sep='/')
@@ -1363,8 +1540,23 @@ get.fama.french.data <- function(
   # unpack
   files = unzip(filename.zip, exdir=temp.folder)  
 
-  # read data
-  filename = paste(temp.folder, '/', filename.txt, sep='')
+  if(len(files) == 1) {
+  	filename = paste(temp.folder, '/', filename.txt, sep='')
+  	return( data.ff.internal.one.file(filename) )
+  }
+  
+  data = env()
+  library(stringr)
+  names = str_trim(str_match(files,'.*/(.*)\\..*')[,2])
+  for(i in 1:len(files))
+  	data[[ names[i] ]] = data.ff.internal.one.file(files[i])
+  
+  data  
+}  
+  
+
+# internal helper function
+data.ff.internal.one.file = function(filename) {  
   out = readLines(filename)
     index = which(nchar(out) == 0)
   
@@ -1422,12 +1614,19 @@ get.fama.french.data <- function(
     } else if( date.format.n == 4 ) {
       date.format.add = '0101'  
     } 
-    
+
+    find.name = function(name,data, i=0) if( is.null(data[[name]]) ) name else find.name(paste(name,i+1), data, i+1)    
+    name = find.name(name, data)
+    	
     data[[name]] = make.xts(temp[,-1], as.Date(paste(temp[,1], date.format.add, sep=''),date.format))
       colnames(data[[name]]) = colnames   
   }
   return( data )
 }
+
+
+    
+
 
 
 ###############################################################################
@@ -1625,29 +1824,270 @@ reconstruct.VXX.CBOE <- function(exact.match=T) {
 
 
 ###############################################################################
+# Load Country Codes from
+# http://www.nationsonline.org/oneworld/country_code_list.htm
+#' @export 
+###############################################################################
+country.code = function
+(
+  force.download = FALSE,
+  data.filename = 'country.code.Rdata'
+)
+{ 
+	if(!force.download && file.exists(data.filename)) {
+		load(file=data.filename)
+		return(temp)
+	}
+	
+	url = 'http://www.nationsonline.org/oneworld/country_code_list.htm'
+	
+	library(curl)
+	#curl_download(url, file,mode = 'wb',quiet=T)
+	#txt = join(readLines(url))
+	txt = rawToChar(curl_fetch_memory(url)$content)
+	
+	temp = extract.table.from.webpage(txt, 'Country or Area Name')
+		temp = trim(temp[,c(2:5)])
+		colnames(temp)=spl('name,code2,code3,code')
+	save(temp,file=data.filename)
+	temp
+}
+
+
+###############################################################################
+# Search/Lookup tickers at http://markets.ft.com
+#' 
+#' @examples
+#' \dontrun{ 
+#' data.ft.search.ticker('s&p 500')
+#' }
+#' @export
+#' @rdname DataFTFunctions
+###############################################################################
+data.ft.search.ticker = function
+(
+  search.field = 'tsx',
+  sec.type = 'IN'
+)
+{
+    #[search](http://markets.ft.com/Research/Markets/Company-Search?searchField=tsx&country=&secType=IN)
+    url = paste0('http://markets.ft.com/Research/Markets/Company-Search?searchField=', curl_escape(search.field), '&country=&secType=', sec.type)
+    
+    library(curl)
+	h = new_handle()	
+	req = curl_fetch_memory(url, h)
+	if(req$status_code != 200) 
+		warning('error getting data, status_code:', req$status_code, 'for url:', url, 'content:', rawToChar(req$content))
+	
+    txt = rawToChar(req$content)
+    
+    # cat(txt, file='dump.txt') # save to analyze
+    # gregexpr('TSEA:TOR',txt) # find location
+    # substr(txt, 20400,20800)
+    
+    # extract links
+    temp = gsub(pattern = '<a', replacement = '<td', txt, perl = TRUE)
+    temp = gsub(pattern = '</a>', replacement = '</td>', temp, perl = TRUE)
+
+    temp = extract.table.from.webpage(temp, 'Symbol,Exchange,Country')
+	
+	
+        colnames(temp)[1:4] = spl('Name,Symbol,Exchange,Country')
+    temp[,1:4]
+}
+
+
+###############################################################################
+# List Index Members at http://markets.ft.com
+#' [sp500](http://markets.ft.com/research/Markets/Tearsheets/Constituents?s=INX:IOM)
+#' [tsx](http://markets.ft.com/research/Markets/Tearsheets/Constituents?s=TSEA:TOR)
+#' [ftse](http://markets.ft.com/research/Markets/Tearsheets/Constituents?s=FTSE:FSI)
+#'
+#' [get industry/sector information from yahoo finance](https://ca.finance.yahoo.com/q/pr?s=RY.TO)
+#' 
+#' @examples
+#' \dontrun{ 
+#' data.ft.index.members('TSEA:TOR')
+#' }
+#' @export
+#' @rdname DataFTFunctions
+###############################################################################
+data.ft.index.members = function
+(
+  ft.symbol = 'INX:IOM',
+  force.download = FALSE,
+  data.filename = paste0(gsub(':','_',ft.symbol),'.Rdata'),
+  data.keep.days = 30
+)
+{
+	# if NOT forced to download and file exists and file is less than 30 days old
+	if( !force.download && 
+		file.exists(data.filename) &&
+		as.numeric(Sys.Date() - file.mtime(data.filename)) <= data.keep.days
+	) {
+		load(file=data.filename)
+		return(data)
+	}	
+	
+	#h = handle_setopt(h, useragent = "moo=moomooo", referer)
+    # 
+	# Main Page
+	#
+    #[sp500](http://markets.ft.com/research/Markets/Tearsheets/Constituents?s=INX:IOM)
+    url = paste0('http://markets.ft.com/research/Markets/Tearsheets/Constituents?s=', ft.symbol)
+    	    
+	#[The curl package: a modern R interface to libcurl](https://cran.r-project.org/web/packages/curl/vignettes/intro.html)
+	library(curl)
+	h = new_handle()
+    txt = rawToChar(curl_fetch_memory(url, h)$content)
+    	
+    # extract links
+    temp = gsub(pattern = '<a', replacement = '<td', txt, perl = TRUE)
+    temp = gsub(pattern = '</a>', replacement = '</td>', temp, perl = TRUE)
+
+    temp = extract.table.from.webpage(temp, 'Equities')
+		
+    # 
+	# Paging
+	#	
+	library(stringr)
+	token = extract.token(txt,'<div class="wsod-paging-key">','</div>')
+	nstep = str_match(token,' data-ajax-paging-end-row="([0-9]+)">')[2]
+		nstep = as.numeric(nstep)
+	nfound = str_match(token,' data-ajax-paging-total-rows="([0-9]+)">')[2]
+		nfound = as.numeric(nfound)
+
+	data = matrix('',nr=nfound,nc=5)
+		colnames(data) = spl('Name,Symbol,LastPrice,TodayChange,YearChange')
+	data[1:nstep,] = temp[,1:5]
+		
+	#[PhantomJS](http://stackoverflow.com/questions/15739263/phantomjs-click-an-element)
+	#[Short R tutorial: Scraping Javascript Generated Data with R](https://www.datacamp.com/community/tutorials/scraping-javascript-generated-data-with-r)	
+	#[webshot::install_phantomjs()](https://cran.r-project.org/web/packages/webshot/index.html)	
+    # 
+	# URL options
+	#	
+	#[Firefox - Web Developer Tools]
+	#	Log request and Response Bodies	
+	token = extract.token(txt,'<div class="wsodHidden">','</div>')
+		token = spl(token,'<input')	
+	names = str_match(token,'data-ajax-param="([^"]*)"')[-1,2]
+	values = str_match(token,'value="([^"]*)"')[-1,2]
+	settings = as.list(sapply(1:len(names), function(i) { t=c(values[i]); names(t)=names[i]; t}))
+		settings$ResetPaging = 'false'
+		
+	h = handle_setopt(h, referer=url)
+
+	for(istart in seq(nstep+1,nfound,by=nstep)) {
+		cat(istart, 'out of', nfound, '\n')
+
+		settings$startRow = paste(istart)
+		handle_setform(h,.list=settings)
+			
+		url = 'http://markets.ft.com/Research/Remote/UK/Tearsheets/IndexConstituentsPaging'
+		txt = rawToChar(curl_fetch_memory(url, h)$content)
+	
+		#cat(txt, file='dump1.htm') # save to analyze	 	
+		#txt0 = txt
+		#[iconv('pretty\u003D\u003Ebig', "UTF-8", "ASCII")](http://stackoverflow.com/questions/17761858/converting-a-u-escaped-unicode-string-to-ascii)	
+		#[Getting started with JSON and jsonlite](https://cran.r-project.org/web/packages/jsonlite/vignettes/json-aaquickstart.html)
+		library(jsonlite)
+		txt=fromJSON(txt)$html
+	
+		# extract links
+		temp = gsub(pattern = '<a', replacement = '<td', txt, perl = TRUE)
+		temp = gsub(pattern = '</a>', replacement = '</td>', temp, perl = TRUE)
+
+		temp = extract.table.from.webpage(temp, has.header=F)
+			
+		data[istart:min(istart+nstep-1,nfound),] = temp[,1:5]
+	}
+
+	# only compare Name,Symbol
+	if( !force.download && file.exists(data.filename) && requireNamespace('flock', quietly = T) ) {
+		data.copy = data
+		load(file=data.filename)
+		
+		comp.index = spl('Name,Symbol')
+		if( all.equal(data.copy[,comp.index],data[,comp.index]) ) {
+			flock::touch(data.filename)
+			return(data) 
+		}
+	}		
+	
+	save(data,file=data.filename)
+	data
+}
+
+#
+# data function template:
+#
+# introduce following parameters:
+# force.download = FALSE - flag to indicate that data need to be updated
+# data.filename = 'data.Rdata' - location to save data
+# data.keep.days = 30 - number of days that data does not need to be refreshed
+#
+#	# if NOT forced to download and file exists and file is less than 30 days old
+#	if( !force.download && 
+#		file.exists(data.filename) &&
+#		as.numeric(Sys.Date() - file.mtime(data.filename)) <= data.keep.days
+#	) {
+#		load(file=data.filename)
+#		return(data)
+#	}	
+#
+# Once data is downloaded check if needs to be saved
+#
+#	# only compare Name,Symbol
+#	if( !force.download && file.exists(data.filename) && requireNamespace('flock', quietly = T) ) {
+#		data.copy = data
+#		load(file=data.filename)
+#		
+#		comp.index = spl('Name,Symbol')
+#		if( all.equal(data.copy[,comp.index],data[,comp.index]) ) {
+#			flock::touch(data.filename)
+#			return(data) 
+#		}
+#	}		
+#	
+#	save(data,file=data.filename)
+#	data
+#}
+#
+
+###############################################################################
 # Load FOMC dates
 # http://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
 # http://www.federalreserve.gov/monetarypolicy/fomchistorical2008.htm
 # http://quant.stackexchange.com/questions/141/what-data-sources-are-available-online
+# http://www.returnandrisk.com/
 #' @export 
 ###############################################################################
 get.FOMC.dates <- function
 (
-  download = TRUE,
-  fomc.filename = 'FOMC.Rdata'
+  force.download = FALSE,
+  data.filename = 'fomc.Rdata'
 )
 {
-  if(!download && file.exists(fomc.filename)) {
-    load(file=fomc.filename)
-    return(FOMC)
-  }
-  
+	warning('get.FOMC.dates is depreciated as of Apr 25, 2016 please use data.fomc function instead')
+	data.fomc(force.download, data.filename)
+}
+
+#' @export
+data.fomc <- function
+(
+  force.download = FALSE,
+  data.filename = 'fomc.Rdata'
+)
+{ 
   # download data 
   url = 'http://www.federalreserve.gov/monetarypolicy/fomccalendars.htm'
   txt = join(readLines(url))
-
+	
+  library(stringr)
+  
   # extract data from page
-  data = c()
+  sb = string.buffer()
   for(year in 2009:(1 + date.year(Sys.Date()))) {
     temp = extract.table.from.webpage(txt, paste(year,'FOMC Meetings'))
     if(nrow(temp) == 0) next
@@ -1655,51 +2095,102 @@ get.FOMC.dates <- function
     temp = tolower(trim(temp[,1:2]))
       temp = temp[nchar(temp[,1]) > 0,]
     month = temp[,1]
-    day = gsub('\\(','',gsub('\\)','',temp[,2]))
-      day = trim(day)
-      status = rep('', len(day))
-    index = grep('\\*',day)
-      if(any(index)) status[index] = '*'    
-    index = grep(' ',day)
-      if(any(index)) for(j in index) status[j] = spl(day[j],' ')[2]
-    day = gsub('\\*','', sapply(day,function(x) spl(x,' ')[1]))
-
-    temp = apply(cbind(day, month, status), 1, function(x) paste(year, spl(x[2],'/'), spl(x[1],'-'), '|', x[3]) )
-        
-    data = cbind(data, trim(sapply(unlist(temp),spl,'\\|')))
+    day = temp[,2]
+    
+    status = paste0(
+    	ifna( str_match(day, '\\(.*\\)'), ''),
+    	ifna( str_match(day, '\\*'), '')
+    )
+    status = gsub('\\(','',gsub('\\)','',status))
+    
+    day = str_replace(day, '(\\(.*?\\))','')
+    day = str_replace(day, '\\*','')
+    
+    day = paste(year, 
+	    sapply( iif(grepl('/',month), month, paste0(month,'/',month)), spl, '/'),
+    	sapply( iif(grepl('-',day), day, paste0(day,'-',day)), spl, '-')
+    )
+    day = matrix(day, nc=2, byrow=T)
+    
+    for(i in 1:len(status)) add(sb, day[i,1], day[i,2], status[i])
+  }
+  data = matrix(scan(what='',text= string(sb),sep=',', quiet=T),nc=3,byrow=T)
+  	close(sb)
+	sb=NULL
+	  
+  first.year = min(as.numeric(substr(data[,1],1,4)))
+  recent.data = data
+    
+  # check if update is needed
+  if(!force.download && file.exists(data.filename)) {
+    load(file=data.filename)
+    # check if data needs to be updates
+    if( last(FOMC$day) == as.Date(last(recent.data[,2]),'%Y %B %d') )   
+    	return(FOMC)
   }
   
-  recent.days = as.Date(data[1,],'%Y %B %d')
-  status = as.vector(data[2,])
-  
   # extract data from page
-  data = c()
-  for(year in 1936:2008) {
+  sb = string.buffer()
+  for(year in 1936:(first.year-1)) {
     cat(year,'\n')
     url = paste0('http://www.federalreserve.gov/monetarypolicy/fomchistorical', year, '.htm')
     txt = join(readLines(url))
       
     tokens = spl(txt,'<div id="historical">')
-    days = c()
+    
     for(token in tokens[-1])
-      days = c(days,colnames(extract.table.from.webpage(token, 'table'))[1])
-    data = rbind(data, cbind(year, days))
+    	add(sb, colnames(extract.table.from.webpage(token, 'year'))[1])
   }
   
-  day = tolower(data[,2])
-  day = gsub(',', '-', gsub('and', '', gsub('conference call', '', gsub('meeting','',day))))
-  # remove last token
-  day = unlist(lapply(day, function(x) join(rev(rev(spl(x,' '))[-1]),' ')))
+  data = scan(what='',text= string(sb),sep='\n', quiet=T)
+  	close(sb)
+	sb=NULL
   
-  temp = unlist(apply(cbind(day,data[,1]),1, function(x) paste(trim(spl(x[1],'-')),x[2]) )) 
-  temp = sapply(lapply(temp,spl,' '), function(x) iif(len(x)==3,x,c(NA,x)))
-    temp[1,] = ifna.prev(temp[1,])
-  days = as.Date(apply(temp,2,join,' '),'%B %d %Y ')
+  # remove year
+  year = substring(data,nchar(data)-3)
+  day = tolower(substring(data,1,nchar(data)-4))
+  # remove Conference Call, Conference Calls, Meeting, Meetings
+  status = paste0(
+    	iif(grepl('conference call',day), 'conference call', ''),
+    	iif(grepl('meeting',day), 'meeting', '')
+  )
   
-  FOMC = list(day = c(days, recent.days), status=c(rep('',len(days)), status))
-  save(FOMC,file=fomc.filename)
+  day = gsub('conference call', '', gsub('conference calls','',day))
+  day = gsub('meeting', '', gsub('meetings','',day))
+    
+  day = gsub(',', '-', gsub('and', '',day))
+  
+#[870] "october 15 "
+#[871] "november 2-3 "
+#[872] "december 14 "
+#[615] "october 21- 22- 23- 26- 27- 28- 29-  30  "
+#[680] "june 30-july 1 "  
+
+
+	# helper fn
+	parse.token = function(year, token) {
+		parts = trim(spl(token,'-'))
+		n = len(parts)
+		if( n > 1 ) {
+			month = ifna.prev(iif(nchar(parts) > 3,
+				sapply(parts, function(x) spl(x, ' ')[1]), # first token
+				NA))
+			parts = iif(nchar(parts) > 3, parts, paste(month, parts))
+		}
+		paste(year, parts[c(1,n)])
+	}
+
+	day = sapply(1:len(day), function(i) parse.token(year[i], day[i]))	
+	all.data = rbind(cbind(t(day), status), recent.data)
+	
+  FOMC = list(day = as.Date(all.data[,2],'%Y %B %d'), start.day = as.Date(all.data[,1],'%Y %B %d'), status=all.data[,3])
+  save(FOMC,file=data.filename)
   FOMC
 } 
+
+# todo comute a$start.day - mlag(a$day) in buisness days
+# parse Minutes: See end of minutes of October 29-30 meeting / (Released November 20, 2013)
+# Minutes: See end of minutes of December 11 meeting / Minutes (Released Jan 2, 2008)
 
 
 ###############################################################################
@@ -1791,6 +2282,52 @@ quantumonline.info <- function
 }
 
 
+###############################################################################	
+#' URL for various data providers
+#' @export 
+###############################################################################
+hist.quotes.url <- function
+(
+	ticker = 'IBM',
+	from = '1900-01-01', 
+	to = Sys.Date(),
+	src = spl('yahoo,google,quotemedia')
+)
+{
+	if(class(from) != 'Date') from = as.Date(from, '%Y-%m-%d')	
+	if(class(to) != 'Date') to = as.Date(to, '%Y-%m-%d')
+	
+	switch(src[1],
+		yahoo = paste('http://ichart.finance.yahoo.com/table.csv?',
+         's=', ticker,  
+         '&a=', sprintf('%.2d', date.month(from) - 1),
+         format(from, '&b=%d&c=%Y'),
+         '&d=', sprintf('%.2d', date.month(to) - 1),
+         format(to, '&e=%d&f=%Y'),
+         '&g=d&q=q&y=0&z=file&x=.csv',
+         sep=''),
+         
+		google = paste('http://finance.google.com/finance/historical?',
+         'q=', ticker,  
+         '&startdate=', format(from, '%b+%d+%Y'),
+         '&enddate=', format(to, '%b+%d+%Y'),
+         '&output=csv',
+         sep=''),
+         
+		quotemedia = paste('http://app.quotemedia.com/quotetools/getHistoryDownload.csv?webmasterId=501&',
+         'symbol=', ticker,  
+         '&startMonth=', sprintf('%.2d', date.month(from) - 1),
+         format(from, '&startDay=%d&startYear=%Y'),
+         '&endMonth=', sprintf('%.2d', date.month(to) - 1),
+         format(to, '&endDay=%d&endYear=%Y'),
+         '&isRanged=true',
+         sep=''),
+         
+    # default
+    ''
+ ) 	
+}  
+
 ###############################################################################
 # Remove extreme data points
 #' @export 
@@ -1871,4 +2408,297 @@ data.clean.helper <- function
     data      
 }
 
+
+###############################################################################
+# Create data proxy, more details at
+# http://systematicinvestor.github.io/Data-Proxy/
+#' @export 
+###############################################################################
+make.data.proxy <- function() {
+    #*****************************************************************
+    # Load external data
+    #******************************************************************   
+    load.packages('quantmod')  
+
+	raw.data = env()
     
+	#--------------------------------   
+    # TRJ_CRB file was downloaded from the 
+    # http://www.corecommodityllc.com/CoreIndexes.aspx
+    # select TR/CC-CRB Index-Total Return and click "See Chart"
+    # on Chart page click "Download to Spreadsheet" link
+    # copy TR_CC-CRB, downloaded file, to data folder
+    filename = 'data/TR_CC-CRB'
+    if(file.exists(filename)) {
+    	temp = extract.table.from.webpage( join(readLines(filename)), 'EODValue' )
+    	temp = join( apply(temp, 1, join, ','), '\n' )
+    	raw.data$CRB = make.stock.xts( read.xts(temp, format='%m/%d/%y' ) )
+    }
+     
+	#--------------------------------   
+	# load 3-Month Treasury Bill from FRED (BIL)
+	filename = 'data/TB3M.Rdata'
+	if(!file.exists(filename)) {
+		TB3M = quantmod::getSymbols('DTB3', src='FRED', auto.assign = FALSE)
+		save(TB3M, file=filename)
+	}
+	load(file=filename)
+	TB3M[] = ifna.prev(TB3M)
+	#compute.raw.annual.factor(TB3M)
+	raw.data$TB3M = make.stock.xts(processTBill(TB3M, timetomaturity = 1/4, 261))
+	
+	
+	#--------------------------------   
+	# load 3 years t-bill from FRED (BIL)
+	filename = 'data/TB3Y.Rdata'
+	if(!file.exists(filename)) {
+		TB3Y = quantmod::getSymbols('DGS3', src='FRED', auto.assign = FALSE)
+		save(TB3Y, file=filename)
+	}
+	load(file=filename)
+	TB3Y[] = ifna.prev(TB3Y)
+	#compute.raw.annual.factor(TB3Y)
+	raw.data$TB3Y = make.stock.xts(processTBill(TB3Y, timetomaturity = 3, 261))
+
+	#--------------------------------   
+	# load 10 years t-bill from FRED (BIL)
+	filename = 'data/TB10Y.Rdata'
+	if(!file.exists(filename)) {
+		TB10Y = quantmod::getSymbols('DGS10', src='FRED', auto.assign = FALSE)
+		save(TB10Y, file=filename)
+	}
+	load(file=filename)
+	TB10Y[] = ifna.prev(TB10Y)
+	#compute.raw.annual.factor(TB10Y)
+	raw.data$TB10Y = make.stock.xts(processTBill(TB10Y, timetomaturity = 10, 261))
+
+	#--------------------------------   
+	# load 20 years t-bill from FRED (BIL)
+	filename = 'data/TB20Y.Rdata'
+	if(!file.exists(filename)) {
+		TB20Y = quantmod::getSymbols('GS20', src='FRED', auto.assign = FALSE)
+		save(TB20Y, file=filename)
+	}
+	load(file=filename)
+
+	TB20Y[] = ifna.prev(TB20Y)
+  
+	#compute.raw.annual.factor(TB10Y)
+	raw.data$TB20Y = make.stock.xts(processTBill(TB20Y, timetomaturity = 20, 12))
+
+	#--------------------------------
+	filename = 'data/GOLD.Rdata'
+	if(!file.exists(filename)) {
+		GOLD = bundes.bank.data.gold()
+		save(GOLD, file=filename)
+	}
+	load(file=filename)
+	raw.data$GOLD = make.stock.xts(GOLD)
+
+	#--------------------------------
+	# FTSE NAREIT U.S. Real Estate Index monthly total return series
+	# http://returns.reit.com/returns/MonthlyHistoricalReturns.xls
+	# https://r-forge.r-project.org/scm/viewvc.php/pkg/FinancialInstrument/inst/parser/download.NAREIT.R?view=markup&root=blotter
+	filename = 'data/NAREIT.xls'
+	if(!file.exists(filename)) {
+		url = 'http://returns.reit.com/returns/MonthlyHistoricalReturns.xls'
+		download.file(url, filename,  mode = 'wb')
+	}
+	
+	load.packages('readxl')	
+	temp = read_excel(filename, sheet='Index Data', skip=7)
+	NAREIT = make.xts(temp$Index, as.Date(temp$Date)) 
+
+	raw.data$NAREIT = make.stock.xts(NAREIT)
+	
+	
+	#--------------------------------
+
+
+	tickers = '
+COM = DBC;GSG + CRB
+
+RExUS = [RWX] + VNQ + VGSIX
+RE = [RWX] + VNQ + VGSIX
+RE.US = [ICF] + VGSIX
+
+EMER.EQ = [EEM] + VEIEX
+EMER.FI = [EMB] + PREMX
+
+GOLD = [GLD] + GOLD,
+US.CASH = [BIL] + TB3M,
+SHY + TB3Y,
+
+US.HY = [HYG] + VWEHX
+
+# Bonds
+US.BOND = [AGG] + VBMFX
+INTL.BOND = [BWX] + BEGBX
+
+JAPAN.EQ = [EWJ] + FJPNX
+EUROPE.EQ = [IEV] + FIEUX
+US.SMCAP = IWM;VB + NAESX
+TECH.EQ = [QQQ] + ^NDX
+US.EQ = [VTI] + VTSMX + VFINX
+US.MID = [VO] + VIMSX
+EAFE = [EFA] + VDMIX + VGTSX
+
+MID.TR = [IEF] + VFITX
+CORP.FI = [LQD] + VWESX
+TIPS = [TIP] + VIPSX + LSGSX
+LONG.TR = [TLT] + VUSTX
+'
+
+
+	data.proxy = env()
+	getSymbols.extra(tickers, src = 'yahoo', from = '1970-01-01', env = data.proxy, raw.data = raw.data, auto.assign = T)
+
+	data.proxy.raw = raw.data
+	save(data.proxy.raw, file='data/data.proxy.raw.Rdata',compress='gzip') 
+	save(data.proxy, file='data/data.proxy.Rdata',compress='gzip') 
+}
+
+
+#*****************************************************************
+# Load/download data from Excel file from AQR data set
+# [Betting Against Beta: Equity Factors, Monthly](https://www.aqr.com/library/data-sets/betting-against-beta-equity-factors-monthly)
+# http://www.aqr.com/library/data-sets/betting-against-beta-equity-factors-monthly/data
+#
+# [Time Series Momentum: Factors, Monthly](https://www.aqr.com/library/data-sets/time-series-momentum-factors-monthly)
+# http://www.aqr.com/library/data-sets/time-series-momentum-factors-monthly/data
+#
+# [Andrea Frazzini - AQR Capital Management, LLC](http://www.econ.yale.edu/~af227/data_library.htm)
+# http://www.aqr.com/library/data-sets/quality-minus-junk-factors-daily/data
+# http://www.aqr.com/library/data-sets/quality-minus-junk-factors-monthly/data
+#
+#' @export 
+###############################################################################
+load.aqr.data = function
+(
+	data.set = 'betting-against-beta-equity-factors', #'time-series-momentum-factors'
+	frequency = c('monthly','daily'),
+	sheet = 1,
+	force.download = F,
+	last.col2extract = 'Global'
+)
+{
+	warning('load.aqr.data is depreciated as of Apr 25, 2016 please use data.aqr function instead')
+	data.aqr(data.set, frequency, sheet, force.download, last.col2extract)
+}
+
+#' @export 
+data.aqr = function
+(
+	data.set = 'betting-against-beta-equity-factors', #'time-series-momentum-factors'
+	frequency = c('monthly','daily'),
+	sheet = 1,
+	force.download = F,
+	last.col2extract = 'Global'
+)
+{
+	data.folder = paste(getwd(), 'aqr.data', sep='/')
+	url = paste0('http://www.aqr.com/library/data-sets/', data.set, '-', frequency[1], '/data')
+	filename = file.path(data.folder, paste0(data.set, '-', frequency[1],'.xlsx'))
+		
+	if( !file.exists(filename) || force.download) {
+		dir.create(data.folder, F)
+		download.file(url, filename,  mode = 'wb')
+	}
+
+	require(readxl)
+	data = read_excel(filename, sheet=sheet)
+	skip = which(data[,1]=='DATE')
+	data = read_excel(filename, sheet=sheet,skip=skip)
+	
+	if( is.character(last.col2extract) ) last.col2extract = which(colnames(data)==last.col2extract)-1	
+	data = data[!is.na(data[,1]), 1:last.col2extract]
+	data = data[rowSums(!is.na(data[,-1,drop=F])) > 0,]
+		
+	make.xts(data[,-1], as.Date(data[,1]))	
+}
+
+
+###############################################################################
+# Load/download CSI security master
+# http://www.csidata.com/factsheets.php?type=commodity&format=csv
+#' @export 
+###############################################################################
+load.csi.security.master = function(force.download = F) {
+	data.folder = paste(getwd(), 'csi.data', sep='/')
+	url = 'http://www.csidata.com/factsheets.php?type=commodity&format=csv'
+	filename = file.path(data.folder, 'commodityfactsheet.csv')
+
+	if( !file.exists(filename) || force.download) {
+		dir.create(data.folder, F)
+		download.file(url, filename,  mode = 'wb')
+	}
+	
+	read.csv(filename)
+}
+
+###############################################################################
+#' Get list of FX symbols from FRED
+#' [FRED H.10 Foreign Exchange Rates](https://research.stlouisfed.org/fred2/release?rid=17)
+#'
+#' @examples
+#' \dontrun{ 
+#' info = fred.fx.symbol()
+#' info$fx$symbol
+#' }
+#' @export
+###############################################################################
+fred.fx.symbol = function() {
+	url = 'https://research.stlouisfed.org/fred2/release/tables?rid=17&eid=23340'
+	txt = join(readLines(url))
+
+	# extract links: <a href="/fred2/series/DEXUSAL" target="_blank">AUSTRALIA</a>
+    temp = gsub(pattern = 'series', replacement = '<td>', txt, perl = TRUE)
+    temp = gsub(pattern = 'target', replacement = '</td><', temp, perl = TRUE) 
+    
+	# extract Symbols table from this page
+	temp = extract.table.from.webpage(temp, 'Country', has.header = F)
+  
+	# format
+	data = gsub('/','',gsub('"','',trim(temp[,c(2,3,7)])))
+		colnames(data) = spl('symbol,name,description')
+	data[,'description']
+  
+	# remove empty
+	keep.index = !is.na(data[,'description']) & nchar(data[,'description']) > 0
+		data = data.frame(data[keep.index,])
+	
+	# split FX and index
+	index = grep('index',data[,'description'],T)
+	list(fx = data[-index,], index = data[index,])
+}
+
+
+###############################################################################
+#' Get list of FX symbols from FXHISTORICALDATA.COM
+#' [FXHISTORICALDATA.COM](http://www.fxhistoricaldata.com/)
+#'
+#' @examples
+#' \dontrun{ 
+#' info = fxhistoricaldata.fx.symbol()
+#' info
+#' }
+#' @export
+###############################################################################
+fxhistoricaldata.fx.symbol = function() {
+	url = 'http://www.fxhistoricaldata.com/'
+	txt = join(readLines(url))
+
+	# extract list options
+	temp = gsub(pattern = '<ul>', replacement = '<table>', txt, perl = TRUE)
+	temp = gsub(pattern = '</ul>', replacement = '</table>', temp, perl = TRUE)
+    temp = gsub(pattern = '<li>', replacement = '<td>', temp, perl = TRUE)
+    temp = gsub(pattern = '</li>', replacement = '</td>', temp, perl = TRUE) 
+	# remove comments
+	temp = gsub(pattern = '<!--.*?-->', replacement = '', temp, perl = TRUE) 
+	
+	# extract info
+	temp = extract.table.from.webpage(temp, 'EURUSD', has.header = F)
+	
+	as.character(temp)
+}	
+	

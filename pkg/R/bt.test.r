@@ -1750,7 +1750,9 @@ dev.off()
 }
 
 
-# Rebalancing method based on maximum deviation
+# Maximum Deviation Rebalancing: rebalance to the target mix when asset weights deviate more than a given percentage from the target mix.
+# Also support rebalancing.ratio, same as above, but rebalance half-way to target
+#' @export 	
 bt.max.deviation.rebalancing <- function
 (
 	data,
@@ -1760,7 +1762,8 @@ bt.max.deviation.rebalancing <- function
 	rebalancing.ratio = 0,	# 0 means rebalance all-way to target.allocation
 							# 0.5 means rebalance half-way to target.allocation
 	start.index = 1,
-	period.ends = 1:nrow(model$weight)							
+	period.ends = 1:nrow(model$weight),
+	fast = T							
 ) 
 {
 	nperiods = nrow(model$weight)
@@ -1789,14 +1792,21 @@ bt.max.deviation.rebalancing <- function
 					data$weight[action.index,] = temp + 
 						rebalancing.ratio * (weight[action.index,] - temp)					
 					
-				model = bt.run.share(data, clean.signal=F, silent=T)
+				# please note the bt.run.share.ex somehow gives slighly better results
+				if(fast)
+					model = bt.run.share.fast(data)
+				else
+					model = bt.run.share.ex(data, clean.signal=F, silent=T)
 				
 				start.index = index[1]
 			} else break			
 		} else break		
 	}
+	
+	model = bt.run.share.ex(data, clean.signal=F, silent=F)
 	return(model)
 }
+
 
 
 
@@ -7909,12 +7919,33 @@ load.hist.stock.data <- function()
 	# Load historical data
 	#****************************************************************** 
 	load.packages('quantmod')
-		
-	stock.folder = 'c:\\Stocks\\Data\\'
-	tickers = spl('UUP,EMB,HYG')
 	
-	data <- new.env()
+	tickers = 'MMM, AA, CAT, KO, HPQ'
+		tickers = trim(spl(tickers))
+	
+	data = env()
+	getSymbols.extra(tickers, src = 'yahoo', from = '1970-01-01', env = data, auto.assign = T)
+	bt.prep(data, align='remove.na', fill.gaps = T)
 
+	#*****************************************************************
+	# Create test data
+	#****************************************************************** 
+		
+	# one file per ticker
+	for(ticker in tickers)
+		write.xts(data[[ticker]], paste0(ticker, '.csv'), format='%m/%d/%Y')
+	
+	# one file
+	write.xts(bt.apply(data, Ad), 'adjusted.csv', format='%m/%d/%Y')
+	
+	#*****************************************************************
+	# Load historical data
+	#****************************************************************** 
+	load.packages('quantmod')
+		
+	stock.folder = ''
+	
+	data = env()
 		
 	# load historical data, select data load method
 	data.load.method = 'basic'
@@ -7932,16 +7963,22 @@ load.hist.stock.data <- function()
 		}	
 	}else if(data.load.method == 'custom.one.file') {
 		# read from one csv file, column headers are tickers
-		filename = 'hex.csv'
+		filename = 'adjusted.csv'
 		all.data = read.xts(paste(stock.folder, filename, sep=''), format='%m/%d/%Y')
+		
+		# alternatively reading xls/xlsx
+		#load.packages('readxl')
+		#all.data = read.xts(read_excel('adjusted.xls'))
+		
 		for(n in names(all.data)) {
 			data[[n]] = all.data[,n]
 			colnames(data[[n]]) = 'Close'
 			data[[n]]$Adjusted = data[[n]]$Open = data[[n]]$High = data[[n]]$Low = data[[n]]$Close
 		}
-	}		
-		
+	}	
 	
+			
+		
 	# prepare data for back test
 		for(i in ls(data)) data[[i]] = adjustOHLC(data[[i]], use.Adjusted=T)							
 	bt.prep(data, align='remove.na')
@@ -9958,3 +9995,156 @@ print(plotbt.strategy.sidebyside(models, make.plot=F, return.table=T))
 print('Monthly Results for', m, ':')
 print(plotbt.monthly.table(models[[m]]$equity, make.plot = F))
 }
+
+
+
+
+###############################################################################
+# Dual Momentum
+#
+# http://www.scottsinvestments.com/2012/12/21/dual-momentum-investing-with-mutual-funds/
+#
+# http://itawealth.com/2014/11/10/dual-momentum-back-tests-part-1/
+# http://itawealth.com/2014/11/12/dual-momentum-back-tests-part-2-adding-diversification-dual-momentum-strategy/
+# http://itawealth.com/2015/04/20/deciphering-the-dual-momentum-model/
+#
+###############################################################################
+bt.dual.momentum.test <- function() 
+{
+	#*****************************************************************
+	# Load historical data
+	#****************************************************************** 
+	load.packages('quantmod')
+		
+	tickers = '
+	# Equity Risk = US Equity = VTI; Equity ex US = VEA 
+	EQ.US = VTI
+	EQ.EX.US = VEA
+	
+	# Credit Risk = High Yield Bonds = HYG; Credit Bonds = CIU  
+	HI.YLD = HYG
+	CREDIT = CIU
+	
+	# Real Estate Risk = Equity REITs =  VNQ; mortgage REITs = REM 
+	REIT.EQ = VNQ
+	REIT.MTG = REM
+	
+	# Economic Stress = Gold = GLD; Long Term Treasuries =TLT  
+	GOLD = GLD
+	LT.GOV = TLT
+	
+	# Cash: T-Bills (SHY)
+	CASH = SHY + VFISX
+	'
+	
+		
+	data = env()
+	getSymbols.extra(tickers, src = 'yahoo', from = '1980-01-01', env = data, set.symbolnames = T, auto.assign = T)
+		#print(bt.start.dates(data))
+		for(i in data$symbolnames) data[[i]] = adjustOHLC(data[[i]], use.Adjusted=T)
+	bt.prep(data, align='keep.all', fill.gaps = T)
+	data = bt.prep.trim(data, '2006::')
+
+	
+	
+	# define risk groups, do not define group for CASH
+	risk.groups = transform(data$prices[1,] * NA, 
+		EQ.US=1, EQ.EX.US=1,
+		HI.YLD=2, CREDIT=2,
+		REIT.EQ=3, REIT.MTG=3,
+		GOLD=4, LT.GOV=4
+		)
+	risk.groups
+
+	# plot asset history
+	#plota.matplot(scale.one(data$prices),main='Asset Performance')
+
+	#*****************************************************************
+	# Setup
+	#*****************************************************************
+	prices = data$prices
+	
+	period.ends = date.ends(prices, 'month')
+		
+	mom = prices / mlag(prices, 252)
+		# Absolute momentum logic: do not allocate if momentum is below CASH momentum
+		mom[mom < as.vector(mom$CASH)] = NA
+	
+	#*****************************************************************
+	# Code Strategies
+	#****************************************************************** 		
+	custom.weight.portfolio <- function(mom, ntop)
+	{
+		mom = mom
+		ntop = ntop
+		function
+		(
+			ia,				# input assumptions
+			constraints		# constraints
+		)
+		{
+			ntop.helper(mom[ia$nperiod, ia$index], ntop)			
+		}	
+	}	
+	
+	
+
+	# setup universe	
+	universe = !is.na(mom)
+		universe[,'CASH'] = F
+	
+	obj = portfolio.allocation.helper(prices, 
+		period.ends = period.ends, 
+		universe = universe,
+		min.risk.fns = list(
+			EW=equal.weight.portfolio,
+			DM=distribute.weights(
+				static.weight.portfolio(rep(1,4)), # there are 4 clusters
+				static.group(risk.groups), # predefined groups
+				custom.weight.portfolio(mom, 1)				
+			)
+		),
+		adjust2positive.definite = F,
+		silent=T
+	) 		
+	
+	# scale results such that each cluster gets 25% weight
+	obj$weights$DM = obj$weights$DM * 0.25
+
+
+	
+	#*****************************************************************
+	# Sanity check
+	#*****************************************************************	
+if(T) {
+	risk.groups = as.vector(risk.groups)
+		risk.groups = ifna(risk.groups, 0)
+	
+	test = matrix(0, nr=len(period.ends),nc=ncol(prices))
+	for(i in 1:nrow(test)) {
+		for(g in 1:4) {
+			index = risk.groups == g
+			test[i, index] = ntop.helper(mom[period.ends[i], index], 1) * 0.25 # there are 4 sectors, each one gets 1/4
+		}
+	}
+	
+	range( coredata(obj$weights$DM) - test )
+}
+	
+	
+	#*****************************************************************
+	# Absolute momentum logic: move reaming allocation to CASH, so that portfolio is fully invested
+	#*****************************************************************	
+	for(i in names(obj$weights))
+		obj$weights[[i]]$CASH = obj$weights[[i]]$CASH + ( 1 - rowSums(obj$weights[[i]]) )
+
+	
+	models = create.strategies(obj, data )$models
+    
+
+	strategy.performance.snapshoot(models, T)
+
+}
+	
+	
+	

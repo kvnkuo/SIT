@@ -44,7 +44,7 @@ spl <- function
   delim = ',' # delimiter
 )
 { 
-  return(unlist(strsplit(s,delim))); 
+  unlist(strsplit(s,delim))
 }
 
 ###############################################################################
@@ -69,7 +69,7 @@ join <- function
   delim = ''  # delimiter
 )
 { 
-  return(paste(v,collapse=delim)); 
+  paste(v,collapse=delim) 
 }
 
 ###############################################################################
@@ -93,8 +93,7 @@ trim <- function
 )
 {
   s = sub(pattern = '^\\s+', replacement = '', x = s)
-  s = sub(pattern = '\\s+$', replacement = '', x = s)
-  return(s)
+  sub(pattern = '\\s+$', replacement = '', x = s)
 }  
 
 ###############################################################################
@@ -117,8 +116,58 @@ len <- function
   x # vector
 )
 {
-  return(length(x)) 
+  length(x)
 }
+
+###############################################################################
+#' Shortcut for list creation function
+#'
+#' This function is a shortcut for list creation function
+#'
+#' @param ... members of list
+#'
+#' @return list
+#'
+#' @examples
+#' \dontrun{ 
+#' a = 1
+#' lst(a,b=2)
+#' }
+#' @export 
+###############################################################################
+lst <- function(
+	... 
+) 
+{
+	values = list( ... )
+	if(len(values) == 0) return(values)
+
+	values.names = names(values)
+	names = as.character(substitute(c(...))[-1])		
+		
+	if( is.null(values.names) ) 
+		names(values) = names
+	else		
+		names(values) = iif(nchar(values.names) > 0, values.names, names)
+	values
+}	
+
+#' @export
+vars2list <- function(...) {
+	warning('vars2list is depreciated as of Feb 29, 2016 please use lst function instead')
+	lst(...)
+}
+
+#' @export
+variable.number.arguments <- function(...) {
+	out = lst(...)
+	if( is.list(out[[1]]) && is.list(out[[1]][[1]]) ) 
+		out[[1]]
+	else	
+		out
+}	
+
+
 
 ###############################################################################
 #' Shortcut for new.env function
@@ -148,15 +197,14 @@ env <- function
 ) 
 {
 	temp = new.env(hash = hash, parent = parent, size = size)
-	values = list(...)
+	values = lst(...)
 	if(len(values) == 0) return(temp)
 	
-	values.names = names(values)
-	names = as.character(substitute(c(...))[-1])
-		
-	names = iif(nchar(values.names) > 0, values.names, names)
-	for(i in 1:len(values))
-		temp[[ names[i] ]] = values[[i]]
+	# copy environment
+	if(len(values) == 1 && is.environment(values[[1]]))
+		list2vars(values[[1]], temp)
+	else	
+		list2vars(values, temp)
 	temp
 }
 
@@ -165,8 +213,18 @@ env <- function
 #'
 #' @export
 #' @rdname EnvironmentFunctions
-env.del <- function(names, env) {
-	rm(list=names, envir=env)
+###############################################################################
+env.del = function(names, env) {
+	warning('env.del is depreciated as of Apr 25, 2016 please use env.rm function instead')
+	env.rm(names, env)
+}
+
+#' @export
+env.rm = function(names, env) {
+	missing = setdiff(names, ls(env))
+	if( len(missing) > 0)
+		warning('Following names are missing in environment:', missing, '\n, names available in environment:', ls(env))
+	rm(list=intersect(names, ls(env)), envir=env)
 }
 
 
@@ -175,7 +233,7 @@ env.del <- function(names, env) {
 #
 # can be useful for debugging:
 #
-# gall <<- vars2list(lookbacks, n.lag, hist.returns, index, hist.all, n.lookback)					
+# gall <<- lst(lookbacks, n.lag, hist.returns, index, hist.all, n.lookback)					
 # list2vars(gall)
 #
 # options(warn=2)
@@ -189,25 +247,25 @@ env.del <- function(names, env) {
 # list2vars(test.env, environment()) 
 # similar to checkpoint package at CRAN
 #
-#' @export 
 ###############################################################################
-vars2list <- function(...) {
-	values = list( ... )
-	if(len(values) == 0) return(values)
-
-	values.names = names(values)
-	names = as.character(substitute(c(...))[-1])
-		
-	names(values) = iif(nchar(values.names) > 0, values.names, names)
-	values
-}
-
 # assign(n, data[[n]], env)
 #' @export 
 list2vars <- function(data, env = parent.frame()) {
-	for(n in ls(data))
+	for(n in ls(data, all.names=T))
 		env[[n]] = data[[n]]
 }
+
+#' @export 
+debug.save = function() {		
+	gall <<- parent.frame()
+}
+
+#' @export 
+debug.load = function() {
+	list2vars(gall,  parent.frame())
+}
+
+
 ###############################################################################
 # Check default argumnets
 #' @export 
@@ -215,7 +273,7 @@ list2vars <- function(data, env = parent.frame()) {
 check.args = function(default.args, args=NULL) {
 	if(is.null(args)) return(default.args)
 	
-	for(n in setdiff(ls(default.args), ls(args)))
+	for(n in setdiff(ls(default.args, all.names=T), ls(args, all.names=T)))
 		args[[n]] = default.args[[n]]
 			
 	args
@@ -296,15 +354,16 @@ iif <- function
       falsepart[cond] = truepart 
     else {
       cond = ifna(cond,F)
-      if(is.xts(truepart))
-        falsepart[cond] = coredata(truepart)[cond]
+	  
+      if(requireNamespace('xts', quietly = T) && xts::is.xts(truepart))
+			falsepart[cond] = coredata(truepart)[cond]
       else
         falsepart[cond] = truepart[cond]
     }
       
     #falsepart[!is.na(cond)] = temp
 
-    return(falsepart);
+    falsepart
   }
 } 
 
@@ -423,351 +482,6 @@ run.count <- function
   return( c( xcount[1:(k-1)], ycount))
 }
 
-###############################################################################
-#' Dates Functions
-#'
-#' @param dates collection of dates
-#'
-#' @return transformed dates
-#'
-#' @examples
-#' \dontrun{ 
-#' date.dayofweek(Sys.Date())
-#' }
-#' @export 
-#' @rdname DateFunctions
-###############################################################################
-date.dayofweek <- function(dates) 
-{ 
-  return(as.double(format(dates, '%w')))
-}
-
-#' @export 
-#' @rdname DateFunctions
-date.day <- function(dates) 
-{ 
-  return(as.double(format(dates, '%d')))
-}
-
-#' @export 
-#' @rdname DateFunctions
-date.week <- function(dates) 
-{ 
-  return(as.double(format(dates, '%U')))
-}
- 
-#' @export 
-#' @rdname DateFunctions
-date.month <- function(dates) 
-{ 
-  return(as.double(format(dates, '%m')))
-}
-
-# (((1:12)-1) %/% 3)+1  
-# date.quarter(Sys.Date())
-#' @export 
-#' @rdname DateFunctions
-date.quarter <- function(dates) 
-{ 
-  (((date.month(dates))-1) %/% 3)+1 
-}
-
-#' @export 
-#' @rdname DateFunctions
-date.year <- function(dates) 
-{ 
-  return(as.double(format(dates, '%Y')))
-}
-
-
-###############################################################################
-#' Dates Index Functions
-#'
-#' @param dates collection of dates
-#'
-#' @return location of the week/month/year ends
-#'
-#' @examples
-#' \dontrun{ 
-#' date.week.ends(seq(Sys.Date()-100, Sys.Date(), 1))
-#' }
-#' @export 
-#' @rdname DateFunctionsIndex
-###############################################################################
-date.week.ends <- function(dates, last.date=T) 
-{ 
-  ends = which(diff( 100*date.year(dates) + date.week(dates) ) != 0)
-  ends.add.last.date(ends, len(dates), last.date)
-}
-
-#' @export 
-#' @rdname DateFunctionsIndex
-date.month.ends <- function(dates, last.date=T) 
-{ 
-  ends = which(diff( 100*date.year(dates) + date.month(dates) ) != 0)
-  ends.add.last.date(ends, len(dates), last.date)
-}
-
-#' @export 
-#' @rdname DateFunctionsIndex
-date.quarter.ends <- function(dates, last.date=T) 
-{ 
-  ends = which(diff( 10*date.year(dates) + date.quarter(dates) ) != 0)
-  ends.add.last.date(ends, len(dates), last.date)
-}
-
-#' @export 
-#' @rdname DateFunctionsIndex
-date.year.ends <- function(dates, last.date=T) 
-{ 
-  ends = which(diff( date.year(dates) ) != 0)
-  ends.add.last.date(ends, len(dates), last.date)
-}
-
-# helper function to add last date
-ends.add.last.date <- function(ends, last.date, action=T) 
-{
-  if(action)
-    unique(c(ends, last.date))
-  else
-    ends
-}
-
-#' @export 
-#' @rdname DateFunctionsIndex
-date.ends.fn <- function(periodicity) {
-  switch(periodicity,
-    weeks = date.week.ends,
-    week = date.week.ends,
-    weekly = date.week.ends,
-    
-    months = date.month.ends,
-    month = date.month.ends,
-    monthly = date.month.ends,
-    
-    quarters = date.quarter.ends,
-    quarter = date.quarter.ends,
-    quarterly = date.quarter.ends,
-        
-    years = date.year.ends,
-    year = date.year.ends,
-    yearly = date.year.ends,
-    annual = date.year.ends,
-    annually = date.year.ends,
-    
-    # default
-    NULLL)  
-}
-
-# 'date.ends(data$prices,'year')
-#' @export 
-#' @rdname DateFunctionsIndex
-date.ends <- function(dates, periodicity, by=1, skip=0, last.date=T, calendar = NULL) {
-	if( is.xts(dates) ) dates = index(dates)
-	periodicity = trim(tolower(periodicity))
-	
-	# bi- means 'every two', as in every two [weeks/months/years, etc]
-	# biweekly = every two weeks / bimonthly = every two months
-	# semi- to mean 'twice every' (as semiannually - twice per year)
-	# semiweekly = twice a week / semimonthly = twice a month
-	bi.flag = substr(periodicity,1,2) == 'bi'
-	#semi.flag = substr(periodicity,1,4) == 'semi'	
-
-	if(bi.flag) periodicity = substr(periodicity,3,1000)
-		by = iif(bi.flag, 2, by)
-	#if(semi.flag) periodicity = substr(periodicity,5,1000)
-	periodicity = trim(gsub('-','',periodicity))
-	
-	
-	
-	# handle boundary cases. i.e. last day is month end
-	dates = as.Date(dates)
-		n = len(dates)
-  
-  	# getHolidayList
-  	load.packages('RQuantLib')
-  
-	holidays = NULL   
-	if(!is.null(calendar)) holidays = getHolidayList(calendar, dates[1] - 60, dates[1] - 1)     
-		before = business.days(dates[1] - 60, dates[1] - 1, holidays)
-    	n.before = len(before) 
-
-	holidays = NULL   
-	if(!is.null(calendar)) holidays = getHolidayList(calendar, dates[n] + 1, dates[n] + 60)   
-		after = business.days(dates[n] + 1, dates[n] + 60, holidays)
-
-	dates = c(before, dates, after)
-	
-	
-	
-	# find ends
-	fn = date.ends.fn(periodicity)
-	if( is.null(fn) ) {
-		ends = endpoints(make.xts(1:len(dates), dates), periodicity)
-			ends = ends[ends > 0]
-	} else
-		ends = fn(dates, last.date=F)
-
-
-				
-		
-	# map back to original dates
-	ends = ends[ends > n.before & ends <= (n.before + n)]
-		ends = ends - n.before
-
-		
-		
-		
-	ends = ends.add.last.date(ends, n, last.date)		
-				
-	if( skip > 0) ends = ends[-c(1:skip)]
-	if( by > 1) ends = ends[seq(1, len(ends), by=by)]
-		
-	ends		
-}
-
-#' out is result of the business.days.location.end
-#' @export 
-#' @rdname DateFunctionsIndex
-date.ends.index <- function(out, timing) {
-  if(timing <= 0)
-    which(out$days.till == (-timing))
-  else
-    which(out$days.since == (timing))
-}
-  
-#' last calendar day of period
-#' date.end('2014-01-13')
-#' @export 
-#' @rdname DateFunctionsIndex 
-date.end <- function(date = Sys.Date(), periodicity = 'months', date.format = '%Y-%m-%d') {
-  date = as.Date(paste(date), date.format)
-  temp = seq(date, date + 40, 1)
-  temp[date.ends.fn(periodicity)(temp)[1]]
-}
-  
-
-# to ger proper month-end and a day before month-end
-# !!!note holidayTSX() is missing CALabourDay
-# http://www.tmx.com/en/about_tsx/market_hours.html
-# load.packages('RQuantLib')    
-# from = as.Date('10Jun2013','%d%b%Y')
-# to = as.Date('10Jan2014','%d%b%Y')
-# holidays = getHolidayList("UnitedStates/NYSE", from, to)  
-#' @export 
-business.days <- function(from, to = as.Date(from) + 31, holidays = NULL) {
-  from = as.Date(from)
-  to = as.Date(to)
-  
-    dates = seq(from, to, by='day')
-    rm.index = date.dayofweek(dates) == 6 | date.dayofweek(dates) == 0
-    if(!is.null(holidays)) {
-        holidays = as.Date(holidays)
-        rm.index = rm.index | !is.na(match(dates, holidays))        
-    }
-     dates[!rm.index]
-}
-
-# if date is month end, return zero
-# from = as.Date('27Dec2013','%d%b%Y')
-# holidays = holidayNYSE(date.year(from))
-# dates = business.days(from, from + 40, holidays)
-# business.days.till.end(from, holidays)
-#' @export 
-business.days.till.end <- function(from, holidays = NULL, fn.ends = date.month.ends) {
-  from = as.Date(from)
-  
-  # make sure from is a business date
-  dates = business.days(from - 10, from, holidays)
-  from = dates[len(dates)]
-  
-  dates = business.days(from, from + 40, holidays)
-  index = match.fun(fn.ends)(dates, F)
-  index[1] - 1
-}
-
-# from = as.Date('3Dec2013','%d%b%Y')
-# holidays = holidayNYSE(date.year(from))
-# dates = business.days(from - 40, from+10, holidays)
-# business.days.since.end(from, holidays)
-#' @export  
-business.days.since.end <- function(from, holidays = NULL, fn.ends = date.month.ends) {
-  from = as.Date(from)
-  
-  # make sure from is a business date
-  dates = business.days(from - 10, from, holidays)
-  from = dates[len(dates)]
-    
-  dates = business.days(from - 40, from + 10, holidays)
-  index = match.fun(fn.ends)(dates, F)
-      
-  last.index = index[len(index)]
-  if( dates[last.index] == from) return(0)
-  
-  from.index = sum(dates <= from)
-  if( dates[last.index] < from) return(from.index - last.index)
-  
-  last.index = index[(len(index) - 1)]
-  return(from.index - last.index)
-}
-
-next.business.day <- function(from, holidays = NULL, offset = 0) {
-  from = as.Date(from)
-  
-  # make sure from is a business date
-  dates = business.days(from + offset, from + 10, holidays)
-  dates[1]
-}
-
-last.business.day <- function(from, holidays = NULL, offset = 0) {
-  from = as.Date(from)
-  
-  # make sure from is a business date
-  dates = business.days(from - 10, from - offset, holidays)
-  dates[1]
-}
-
-# load.packages('quantmod')
-# data = getSymbols('AAPL', auto.assign = F)
-# dates = index(data)
-# out = business.days.location.end(dates, holidayNYSE)
-# cbind(format(dates,'%d%b%y'), out$days.since, out$days.till)
-#' @export 
-business.days.location.end <- function(dates, calendar = null, fn.ends = date.month.ends) { 
-  dates = as.Date(dates)
-  n = len(dates)
-  
-  # getHolidayList
-  load.packages('RQuantLib')
-  
-holidays = NULL   
-if(!is.null(calendar)) holidays = getHolidayList(calendar, dates[1] - 60, dates[1] - 1)   
-  
-  before = business.days(dates[1] - 60, dates[1] - 1, holidays)
-    n.before = len(before) 
-
-holidays = NULL   
-if(!is.null(calendar)) holidays = getHolidayList(calendar, dates[n] + 1, dates[n] + 60)   
-        
-  after = business.days(dates[n] + 1, dates[n] + 60, holidays)
-  
-  
-  all = c(before, dates, after)
-    n.all = len(all)
-  all.index = (n.before + 1) : (n.before + n)
-  
-  index = match.fun(fn.ends)(all, F)
-  
-  temp.cum = cumsum(rep(1,n.all))
-    temp = temp.cum * NA
-    temp[index] = temp.cum[index]
-  days.since = temp.cum - ifna.prev(temp)
-  days.till = temp[ifna.prevx.rev(temp)] - temp.cum
-  
-  #cbind(format(all,'%d%b%y'), days.since, days.till)[all.index, ]
-  
-  list(days.since = days.since[all.index], days.till = days.till[all.index])
-}
  
 
 ###############################################################################
@@ -841,82 +555,6 @@ create.monthly.table <- function(monthly.data)
   return(temp)
 }
     
-###############################################################################
-#' Compute the expiration date of stock options (3rd Friday of the month)
-#'
-#' @param year year
-#' @param month month
-#'
-#' @return date for the third Friday of the given month and year
-#'
-#' @references 
-#' \url{http://bytes.com/topic/python/answers/161147-find-day-week-month-year}
-#'
-#' \url{http://www.mysmp.com/options/options-expiration-week.html}
-#' The week beginning on Monday prior to the Saturday of options expiration is referred to as options expiration week. 
-#' Since the markets are closed on Saturday, the third Friday of each month represents options expiration.
-#' If the third Friday of the month is a holiday, all trading dates are moved forward; meaning that Thursday will be the last trading day to exercise options.
-#'
-#' \url{http://www.cboe.com/TradTool/ExpirationCalendar.aspx}
-#'
-#' @examples
-#' \dontrun{ 
-#' third.friday.month(2012,1)
-#' }
-#' @export 
-###############################################################################
-third.friday.month <- function(years, months)
-{ 
-helper <- function(year, month) {
-  day = date.dayofweek( as.Date(c('', 10000*year + 100*month + 1), '%Y%m%d')[-1] )
-  day = c(20,19,18,17,16,15,21)[1 + day]
-  as.Date(c('', 10000*year + 100*month + day), '%Y%m%d')[-1]
-}
-  if(len(years) > 1 && len(months) > 1) {
-    out = c()
-    for(month in months)
-      out = c(out, helper(years,month))
-    as.Date(out)
-  } else
-    helper(years,months) 
-} 
-
-# Special days
-# http://www.cboe.com/AboutCBOE/xcal2014.pdf
-# third.friday.month(2010:2013, 4)  
-# key.date = map.spx.expiration(data$prices)  
-# VIX settles 30 days prior to SPY
-# key.date = map.spx.expiration(data$prices, offset=30)   
-# na.omit(key.date['2014'])
-#' @export
-map.spx.expiration <- function(data, backfill = T, offset = 0) {
-  dates = as.Date(index(data))
-  
-  # 3rd Friday of the month is last trading day for equity options
-  years = date.year(range(dates))
-  friday = third.friday.month(years[1]:(years[2]+1), 1:12)
-    friday.future = friday[friday > last(dates)]
-    friday = friday[friday <= last(dates)]
-  
-  key.date.index = match(friday, dates)
-  na.index = which(is.na(key.date.index))
-  
-  # backfill NA's
-  if(backfill && len(na.index)>0)
-    key.date.index[na.index] = match(friday[na.index]-1, dates)
-
-  if(offset != 0) {
-    friday = c(dates[key.date.index], friday.future)
-    offset.date = friday - offset
-    key.date.index = match(offset.date, dates)
-  }
-  
-  key.date.index = na.omit(key.date.index)
-  
-  key.date = NA * data[,1]
-    key.date[key.date.index,] = T
-  key.date
-}
 
 
 
@@ -1116,7 +754,56 @@ repmat <- function
   m # number of copies along columns
 )
 {
+  if( is.null(dim(v)) ) v = matrix(v,1)
   kronecker( matrix(1, n, m), v )
+}
+
+###############################################################################
+#' Convience shortcut for as.vector function
+#'
+#' @param x object
+#'
+#' @return new vector
+#' 
+#' @export 
+###############################################################################
+vec <- function
+(
+	x
+)
+{
+	if( !is.null(dim(x)) && len(dim(x)) != 1) 
+		dim(x) = len(x)
+	x
+}
+
+###############################################################################
+#' Convience shortcut for matrix function
+#'
+#' @param x object
+#' @param col flag to inidcate 1 column if x is a vector; otherwise 1 row
+#'
+#' @return new matrix
+#' 
+#' @export 
+###############################################################################
+mat <- function
+(
+	x,
+	col = T	
+)
+{
+	if( is.null(dim(x)) || len(dim(x)) != 2) {
+		n = names(x)
+		if( col ) {
+			dim(x) = c(len(x), 1)
+			if( !is.null(n) ) rownames(x) = n
+		} else {
+			dim(x) = c(1, len(x))
+			if( !is.null(n) ) colnames(x) = n
+		}
+	}	
+	x
 }
 
 ###############################################################################
@@ -1140,7 +827,7 @@ rep.row <- function
   nr # number of copies along rows
 )
 {
-  if(nr == 1) m
+  if(nr == 1) matrix(m, 1) 
   else matrix(m, nr=nr, nc=len(m), byrow=T)
 }
 
@@ -1373,7 +1060,10 @@ make.xts <- function
     x = structure(.Data = x, 
       index = structure(index, tzone = tzone, tclass = orderBy), 
       class = c('xts', 'zoo'), .indexCLASS = orderBy, tclass=orderBy, .indexTZ = tzone, tzone=tzone)
-  return( x )
+      
+    if (!is.null(attributes(x)$dimnames[[1]]))
+        dimnames(x) <- dimnames(x)              
+    x
 }
 
 
@@ -1490,17 +1180,17 @@ read.xts <- function
   decreasing = FALSE,
   sep = ',',
   date.column = 1,
-  skip = -1L,
+  skip = 0L,
   ...
 )
 {
+load.packages('data.table')
 if (is.matrix(x) || (is.data.frame(x) && !is.data.table(x)) ) {
   data = x
   dates = as.matrix(data[,date.column,drop=F])
   data  = data[,-date.column,drop=F]
 } else {
-  filename = x
-  load.packages('data.table')
+  filename = x  
 if(!is.data.table(x)) {
   # set autostart
   out = fread(filename, stringsAsFactors=F, sep=sep, autostart=2, skip=skip)
@@ -1928,47 +1618,8 @@ parse.expr = function(expr) {
 	sapply(expr, function(x) spl(x,'#')[1])
 }
 
-###############################################################################
-#' Helper function to extend functionality of getSymbols
-#'
-#' Syntax to specify tickers:
-#' * Basic : XLY
-#' * Rename: BOND=TLT
-#' * Extend: XLB+RYBIX
-#' * Mix above: XLB=XLB+RYBIX+FSDPX+FSCHX+PRNEX+DREVX
-#' Symbols = spl('XLY, BOND=TLT,XLY+RYBIX,XLB=XLB+RYBIX+FSDPX+FSCHX+PRNEX+DREVX')
-
-#' tickers=spl('XLB+RYBIX+FSDPX+FSCHX+PRNEX+DREVX,
-#' XLE+RYEIX+VGENX+FSENX+PRNEX+DREVX,
-#' XLF+FIDSX+SCDGX+DREVX,
-#' XLI+FSCGX+VFINX+FEQIX+DREVX,
-#' XLK+RYTIX+KTCBX+FSPTX+FTCHX+FTRNX+DREVX,
-#' XLP+FDFAX+FSPHX+OARDX+DREVX,
-#' XLU+FSUTX+DREVX,
-#' XLV+VGHCX+VFINX+DREVX,
-#' XLY+FSRPX+DREVX,
-#' BOND+IEI+VFIUX+VFITX+FSTGX+FGOVX+STVSX+FGMNX+FKUSX')
-#' 
-#' data <- new.env()
-#'   getSymbols.extra(tickers, src = 'yahoo', from = '1980-01-01', env = data, auto.assign = T)
-#' bt.start.dates(data)
-#' 
 #' @export 
-################################################################################
-getSymbols.extra <- function 
-(
-  Symbols = NULL, 
-  env = parent.frame(), 
-  getSymbols.fn = getSymbols,
-  raw.data = new.env(),   # extra pre-loaded raw data
-  set.symbolnames = F,
-  auto.assign = T,  
-  ...
-) 
-{
-	Symbols = parse.expr(Symbols)
-	if(len(Symbols) < 1) return(Symbols)
-  
+map.symbols = function(Symbols) {
   	Symbols = toupper(Symbols)
     
 	# split
@@ -2007,27 +1658,78 @@ getSymbols.extra <- function
 		#values = spl(iif(len(spl(s, '=')) > 1, spl(s, '=')[2], s), '\\+')
 		#map[[trim(name)]] = trim(values)   
 	}
+	map
+}
+
+
+###############################################################################
+#' Helper function to extend functionality of getSymbols
+#'
+#' Syntax to specify tickers:
+#' * Basic : XLY
+#' * Rename: BOND=TLT
+#' * Extend: XLB+RYBIX
+#' * Mix above: XLB=XLB+RYBIX+FSDPX+FSCHX+PRNEX+DREVX
+#' Symbols = spl('XLY, BOND=TLT,XLY+RYBIX,XLB=XLB+RYBIX+FSDPX+FSCHX+PRNEX+DREVX')
+
+#' tickers=spl('XLB+RYBIX+FSDPX+FSCHX+PRNEX+DREVX,
+#' XLE+RYEIX+VGENX+FSENX+PRNEX+DREVX,
+#' XLF+FIDSX+SCDGX+DREVX,
+#' XLI+FSCGX+VFINX+FEQIX+DREVX,
+#' XLK+RYTIX+KTCBX+FSPTX+FTCHX+FTRNX+DREVX,
+#' XLP+FDFAX+FSPHX+OARDX+DREVX,
+#' XLU+FSUTX+DREVX,
+#' XLV+VGHCX+VFINX+DREVX,
+#' XLY+FSRPX+DREVX,
+#' BOND+IEI+VFIUX+VFITX+FSTGX+FGOVX+STVSX+FGMNX+FKUSX')
+#' 
+#' data <- new.env()
+#'   getSymbols.extra(tickers, src = 'yahoo', from = '1980-01-01', env = data, auto.assign = T)
+#' bt.start.dates(data)
+#' 
+#' @export 
+################################################################################
+getSymbols.extra <- function 
+(
+  Symbols = NULL, 
+  env = parent.frame(), 
+  getSymbols.fn = getSymbols,
+  raw.data = new.env(),   # extra pre-loaded raw data
+  set.symbolnames = F,
+  auto.assign = T,
+  try.extend = T,  
+  ...
+) 
+{
+	Symbols = parse.expr(Symbols)
+	if(len(Symbols) < 1) return(Symbols)
+  
+	map = map.symbols(Symbols)
+	
 	Symbols = unique(unlist(map))
   
 	# find overlap with raw.data
-	Symbols = setdiff(Symbols, ls(raw.data))
+	Symbols = setdiff(Symbols, ls(raw.data, all.names=T))
 
 	# download
 	data = new.env()
 	if(len(Symbols) > 0) match.fun(getSymbols.fn)(Symbols, env=data, auto.assign = T, ...)
-	for(n in ls(raw.data)) data[[n]] = raw.data[[n]]
+	for(n in ls(raw.data, all.names=T)) data[[n]] = raw.data[[n]]
   
 	# reconstruct, please note getSymbols replaces ^ symbols
 	if (set.symbolnames) env$symbolnames = names(map)
 	
   for(s in names(map)) {
     env[[ s ]] = data[[ gsub('\\^', '', map[[ s ]][1]) ]]
+   if(try.extend)    
     if( len(map[[ s ]]) > 1)
       for(i in 2:len(map[[ s ]]))
         if(is.null(data[[ gsub('\\^', '', map[[ s ]][i]) ]]))
           cat('Not Downloaded, main =', s, 'missing' , gsub('\\^', '', map[[ s ]][i]), '\n', sep='\t')    
         else
           env[[ s ]] = extend.data(env[[ s ]], data[[ gsub('\\^', '', map[[ s ]][i]) ]], scale=T)
+          
+          
     if (!auto.assign)
           return(env[[ s ]])      
   } 
@@ -2084,10 +1786,172 @@ getSymbols.intraday <- function
 {
   if(len(Symbols) > 0) {
     match.fun(getSymbols.fn)(Symbols, env = env, auto.assign = auto.assign, ...)
-    data.today = getQuote.yahoo.today(ls(env))
+
+    # same logic as in getSymbols.extra
+	Symbols = parse.expr(Symbols)
+	if(len(Symbols) < 1) return(Symbols) 
+	map = map.symbols(Symbols)
+		map = sapply(map, first)
+	
+	data.today = getQuote.yahoo.today(unique(map))
+		data.today[data.today == 'N/A'] = NA
+		lookup = 1:nrow(data.today)
+		names(lookup) = toupper(trim(data.today$Symbol))
+	
+	data.today = data.today[lookup[map],]
+		data.today$Symbol = names(map)
+		
     bt.append.today(env, data.today)
   }
 }
+
+
+# test for getSymbols.intraday function
+getSymbols.intraday.test <- function() { 
+	tickers = '
+	LQD + VWESX
+	DBC + CRB
+	VTI +VTSMX # (or SPY)
+	ICF + VGSIX # (or IYR)
+	CASH = SHY
+	'
+	
+	data.intraday  = env()
+	
+	getSymbols.extra(tickers, src = 'yahoo', from = '2012-01-01', env = data.intraday,
+		raw.data = data.proxy.raw, set.symbolnames = T, auto.assign = T,
+		getSymbols.fn = getSymbols.intraday)
+	
+	last(data.intraday$CASH,5)
+	last(data.intraday$VTI,5)
+	
+	data = env()
+	
+	getSymbols.extra(tickers, src = 'yahoo', from = '2012-01-01', env = data,
+		raw.data = data.proxy.raw, set.symbolnames = T, auto.assign = T)
+	
+	last(data$CASH,5)
+	last(data$VTI,5)
+}
+
+
+
+
+
+
+###############################################################################
+#' Work with expressions
+#' as.expression(quote({x=2+y}))
+#' @export 
+################################################################################
+convert2expr = function(expr) {
+	if(class(substitute(expr)) == '{') {
+		if(F) {
+			return(as.expression(substitute(expr)))
+		} else {
+			temp = deparse(substitute(expr))
+			return(parse(text = temp[-c(1,length(temp))]))
+		}
+	}
+	
+	if(is.character(expr)) return(parse(text = expr))
+	
+	expr
+}
+
+convert2expr.test = function() {
+	convert2expr({x=2+y})
+	convert2expr({x=2+y; a=b})
+	convert2expr({
+		x=2+y
+		a=b
+	})
+	
+	convert2expr(expression(x=2+y))
+	convert2expr(expression(x=2+y,a=b))
+	convert2expr('x=2+y')
+	convert2expr('x=2+y; a=b')
+	convert2expr('
+		x=2+y
+		a=b
+	')
+	
+	a = convert2expr({x=2+y})
+	expr.symbols(a)
+}
+
+
+
+
+remove.operators = function(tokens) { 
+	tokens = unique(trim( tokens[-grep('[=\\+\\-\\*/><\\(\\)\\{\\}]',tokens)] )) 
+	tokens[nchar(tokens) > 0 & tokens != 'expression' & tokens != 'convert2expr']
+}
+
+# http://adv-r.had.co.nz/Expressions.html
+# bizzare!!!
+# all.names(parse(text='x=2+y'))
+#[1] "=" "x" "+" "y"
+# all.names(expression(x=2+y))
+#[1] "+" "y"
+#
+# names(as.pairlist(expression(a+b, c=d)))
+# all.names(expression(a+b, c=d))
+#' @export 
+expr.symbols = function(expr) {
+	# use substitute to avoid expr evaluation
+	#cat(class(substitute(expr)), mode(substitute(expr)), is.expression(substitute(expr)), '\n')
+	
+	# need quote to avoid evaluation, all.names(quote({
+	if(mode(substitute(expr)) == 'call')
+		return(remove.operators(
+			c(names(as.pairlist(substitute(expr))),
+			all.names(substitute(expr)))
+		))		
+	
+	# if name no need to substitute
+	if(mode(substitute(expr)) == 'name')
+		if(is.expression(expr)) {	
+			return(remove.operators(
+				c(names(as.pairlist(expr)),
+				all.names(expr))
+			))		
+		} else {
+			return(remove.operators(
+				all.names(expr)
+		))
+		}
+	
+		
+	if(is.character(expr)) 
+		return(remove.operators(
+			all.names(parse(text=expr))
+		))
+
+	expr
+}
+
+expr.symbols.test = function() {
+
+	expr.symbols({
+		x = 2 + y+z
+		a=2+b
+	})
+	
+	
+	expr.symbols({x=y+2})
+	
+	expr.symbols('x=y+2')
+	
+	expr.symbols(expression(x=2+y))
+	
+	expr.symbols(expression(x=2+y, a=b))
+	
+	a = expression(x=2+y+zzasd)
+	expr.symbols(a)
+	
+}
+
 
 ###############################################################################
 # Log (feedback) functions
@@ -2143,7 +2007,7 @@ random.string <- function(lenght = 12) { join(sample(c(0:9, letters, LETTERS),le
 ###############################################################################
 #' List function / variables in enviroment
 #'
-#' http://www.mail-archive.com/r-help@stat.math.ethz.ch/msg22679.html
+#' http://www.mail-archive.com/r-help@@stat.math.ethz.ch/msg22679.html
 #'
 #' @export 
 #' @rdname ListEnvFunctions
@@ -2161,4 +2025,181 @@ ls.v <- function(env=sys.frame(-1))unlist(lapply(ls(env=env),function(x)if(!is.f
 #' @export 
 parse.number <- function(x) {
   as.numeric(gsub('[^0-9\\+-\\.]', '', x) ) 
+}
+
+###############################################################################
+#' Flexiable utility function to Map value(s) to vector
+#'
+#' @param value value(s) to use for mapping
+#' @param labels names of vector columns
+#' @param default default value, \strong{defaults to 0}
+#'
+#' @return vector
+#'
+#' Possible scenarios:
+#' one number, applied to all assets
+#' array, same number of entrys as assets
+#' named list, each name corresponds asset
+#'	plus have a fallback asset if nothing provided
+#'
+#' @examples
+#' \dontrun{ 
+#' map2vector(1, 5)
+#' map2vector(c(1,2,3,4,5), 5)
+#' map2vector(c(1,2,NA,4,5), 5, 100)
+#' map2vector(list(a=1,b=4), 'a,b,c,d,e', 100)
+#' map2vector(list(a=1,C=4), 'a,b,c,d,e', 100)
+#' map2vector(labels= 'a,b,c,d,e', 100)
+#' map2vector({
+#'   a=10
+#'   b=2
+#'   },'a,b,c', 100)
+#' }
+#' @export 
+###############################################################################
+map2vector = function(expr, labels, default = 0) {
+	if( is.xts(labels) ) labels = names(labels)
+	if( is.character(labels) ) labels = spl(labels)
+	n = iif( is.numeric(labels), labels, len(labels) )
+	
+	if( len(expr) == 0 ) return(rep(default, n))
+	
+	if(mode(substitute(expr)) == 'call') {
+		value = rep(default, n)
+			names(value) = labels
+			
+		# idea from within
+		e = evalq(environment(), as.list(value))
+		eval(substitute(expr), e)
+			
+		temp = unlist(as.list(e))
+		value[names(temp)] = temp
+		return(value)
+	}
+		
+	if( is.list(expr) ) {
+		out = rep(default, n)
+		out[ match(toupper(names(expr)), toupper(labels)) ] = unlist(expr)
+		out
+	} else		
+		ifna(iif( len(expr) == 1, rep(expr, n), expr), default)
+}
+
+###############################################################################
+#' Reverse mapping
+#'
+#' @export 
+###############################################################################
+rev.map = function(map) {
+	value = names(map)
+		names(value) = map
+	value
+}
+
+
+###############################################################################
+#' Reverse mapping
+#'
+#' @rdname FileFunctions
+#' @export 
+###############################################################################
+write.file = function(..., file) cat(..., file=file)
+
+
+# [Import text file as single character string](http://stackoverflow.com/questions/9068397/import-text-file-as-single-character-string)
+#' @rdname FileFunctions
+#' @export 
+read.file = function(file) readChar(file, file.info(file)$size)
+
+
+###############################################################################
+#' String Buffer class - fast storage for strigns
+#' 
+#' @examples
+#' \dontrun{ 
+#' sb = string.buffer()
+#' add(sb, 'asbcd')
+#' add(sb, '234543')
+#' string(sb)
+#' close(sb)
+#' sb=NULL
+#' }
+#' @rdname string.buffer
+#' @export
+###############################################################################
+string.buffer = function() structure(list(file = rawConnection(raw(0L), open='w')), class = 'StringBuffer')
+
+#' @rdname string.buffer
+#' @export
+add = function(x,...,sep,end.sep) UseMethod('add',x)
+
+#' @rdname string.buffer
+#' @export
+add.StringBuffer = function(x,...,sep=',',end.sep='\n') {
+	cat(..., file = x$file, sep = sep)	
+	if(nchar(end.sep) > 0) cat(end.sep, file = x$file)
+	}
+
+#' @rdname string.buffer
+#' @export
+string = function(x) UseMethod('string',x)
+
+#' @rdname string.buffer
+#' @export
+string.StringBuffer = function(x) rawToChar(rawConnectionValue(x$file))
+
+#' @rdname string.buffer
+#' @export
+close = function(x) UseMethod('close',x)
+
+#' @rdname string.buffer
+#' @export
+close.StringBuffer = function(x) {close(x$file); x$file = NULL}
+
+
+# test string.buffer functionality
+string.buffer.test = function() {
+	# base example
+	file = rawConnection(raw(0L), open="w")
+
+	write('asbcd', file)
+	write('234543', file)
+
+	res =rawToChar(rawConnectionValue(file))
+
+	close(file)
+	file = NULL;
+	
+	# string.buffer class usage
+	sb = string.buffer()
+	add(sb, 'asbcd')
+	add(sb, '234543')
+	string(sb)
+	close(sb)
+	sb=NULL
+		
+	#benchmark
+   	test.base = function() {
+   		s =''
+		for(i in 1:10000)
+			s = paste(s,'abcdef',sep='')
+		nchar(s)
+   	}
+   	test.string.buffer = function() {
+		sb = string.buffer()
+		for(i in 1:10000)
+			add(sb, 'abcdef', '')
+		s = string(sb)	
+		sb=NULL
+		nchar(s)
+   	}
+	
+  	library(rbenchmark)
+	benchmark(
+   		test.base(),
+   		test.string.buffer(),
+       columns = c("test", "replications", "elapsed", "relative"),
+       order = "relative",
+       replications = 1
+	)
 }

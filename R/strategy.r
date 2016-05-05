@@ -743,9 +743,11 @@ risk.parity.portfolio <- function(
 				
 		# re-scale weights to penalize for risk		
 		x = 1 / fn(ia)[risk.index]
-				
+			# if an asset has a negative fn this asset’s weight will be 0; 
+			x[x < 0] = 0
+		
 		# normalize weights to sum up to 1
-		set.risky.asset(x / sum(x), risk.index)
+		ifna(set.risky.asset(x / sum(x), risk.index), 0)
 	}	
 }
 
@@ -1018,6 +1020,46 @@ random.hist <- function(
 	}	
 }
 
+
+#*****************************************************************	
+# generate given number of historical scenarios
+# and average portfolio allocation algo weights 
+# across all scenarios
+#' @export 
+#*****************************************************************
+random.hist.weight = function(
+	fn,
+	data,
+	period.ends,
+	nsamples = 100, 
+	sample.len = 120,
+	silent = F	
+)
+{
+	prices = data$prices * data$universe
+	obj = fn(prices, data)
+		
+	scenarios = asset.paths.at.period.ends(data$prices, period.ends, nsamples, lookback.len=sample.len)
+	#plota.matplot(scale.one(make.xts(scenarios[,,j],data$dates)),main='Asset Perfromance')
+	
+	for(j in 1:nsamples) {
+		prices = make.xts(scenarios[,,j],data$dates)
+			colnames(prices) = colnames(data$prices)
+		prices = prices * data$universe
+		temp = fn(prices, data)
+		for(i in names(obj$weights))
+			obj$weights[[i]] = obj$weights[[i]] + temp$weights[[i]]
+			
+		if (j %% 5 == 0)
+			if (!silent)
+				cat(j, 'done', '\n')
+	}
+
+	for(i in names(obj$weights))
+		obj$weights[[i]] = obj$weights[[i]] / (nsamples + 1)
+		
+	obj
+}
 	
 	
 		
@@ -1165,6 +1207,203 @@ dev.off()
 		
 }
 
+
+# When all asset Sharpe Ratios are equal, this MDP portfolio will 
+# have the highest possible Sharpe Ratio. 
+# https://www.putnam.com/literature/pdf/whitepaper_parity_strategies.pdf
+max.div.portfolio.test <- function() 
+{
+
+	#*****************************************************************
+	# Load historical data
+	#****************************************************************** 
+	load.packages('quantmod')
+		
+	tickers = spl('SPY,QQQ,EEM,IWM,EFA,TLT,IYR,GLD')
+	
+	data = env()
+	getSymbols.extra(tickers, src = 'yahoo', from = '1980-01-01', env = data, set.symbolnames = T, auto.assign = T)
+		for(i in data$symbolnames) data[[i]] = adjustOHLC(data[[i]], use.Adjusted=T)
+	bt.prep(data, align='keep.all', fill.gaps = T)
+
+	#*****************************************************************
+	# Setup
+	#*****************************************************************
+	prices = data$prices
+	
+	period.ends = date.ends(prices, 'month')
+
+	hist.returns = prices[period.ends] / mlag(prices[period.ends]) - 1
+	
+	# Create historical input assumptions
+	ia = create.historical.ia(hist.returns, 12)
+	
+	constraints = create.basic.constraints(ia$n, 0, 1, 1)
+	
+	load.packages('quadprog,corpcor,lpSolve,kernlab')
+
+	sol1 = max.div.portfolio(ia, constraints)
+	
+	#*****************************************************************
+	# Replication
+	#*****************************************************************	
+	# Properties of the Most Diversified Portfolio by Yves Choueifaty
+	# http://papers.ssrn.com/sol3/papers.cfm?abstract_id=1895459
+	# p21 min wEw s.t. w[i] > 0 and Sum(w[i] * sigma[i]) = 1
+	# normalize weights to sum up to 1	
+	max.div.portfolio2 <- function
+	(
+		ia,				# input assumptions
+		constraints		# constraints
+	)
+	{
+		risk.index = get.risky.asset.index(ia)
+
+		constraints = new.constraints(ia$n, lb = 0)
+ 		constraints = add.constraints(diag(ia$n), type = ">=", b = 0, constraints)
+			constraints = add.constraints(ia$risk, type = '=', b = 1, constraints)	
+		x = min.var.portfolio(ia, constraints)
+		
+		# normalize weights to sum up to 1
+		set.risky.asset(x / sum(x), risk.index)
+	}
+	
+	sol2 = max.div.portfolio2(ia, constraints)
+	
+	# weights
+	round(100*cbind(sol1,sol2),2)
+		
+	# risk contributions
+	round(100*t(portfolio.risk.contribution(rbind(sol1,sol2), ia)),2)
+			
+	#*****************************************************************
+	# Example from paper: Base
+	#*****************************************************************	
+	ia = list(
+		n = 2,
+		symbols = spl('A,B'),
+		risk = c(20, 10) / 100,
+		correlation = matrix(c(1, 0.5, 0.5, 1), 2, 2),
+		expected.return = c(1,1)		
+	)
+	ia$cov = ia$correlation * (ia$risk %*% t(ia$risk))
+	ia.base = ia
+	
+	constraints = create.basic.constraints(ia$n, 0, 1, 1)
+	
+	sol = list(
+	EW = equal.weight.portfolio(ia, constraints),
+	ERC = equal.risk.contribution.portfolio(ia, constraints),
+	MV = min.var.portfolio(ia, constraints),
+	MDP = max.div.portfolio(ia, constraints),
+	MDP2 = max.div.portfolio1(ia, constraints)
+	)
+	
+	# weights
+	round(100*t(sapply(sol,c)))
+		
+	# risk contributions
+	round(100*portfolio.risk.contribution(t(sapply(sol,c)), ia))
+		
+	#*****************************************************************
+	# Example from paper: Duplication
+	#*****************************************************************	
+	ia = list(
+		n = 3,
+		symbols = spl('A,A1,B'),
+		risk = c(20, 20, 10) / 100,
+		correlation = matrix(c(1, 1, 0.5, 1, 1, 0.5, 0.5, 0.5, 1), 3, 3),
+		expected.return = c(1,1,1)		
+	)
+	ia$cov = ia$correlation * (ia$risk %*% t(ia$risk))
+	
+	constraints = create.basic.constraints(ia$n, 0, 1, 1)
+	
+	sol = list(
+	EW = equal.weight.portfolio(ia, constraints),
+	ERC = equal.risk.contribution.portfolio(ia, constraints),
+	MV = min.var.portfolio(ia, constraints),
+	MDP = max.div.portfolio(ia, constraints),
+	MDP2 = max.div.portfolio1(ia, constraints)
+	)
+	
+	# weights
+	weights = t(sapply(sol,c))
+	round(100*weights)
+		
+	weights.base = cbind(rowSums(weights[,1:2]), weights[,3])
+	round(100*weights.base)
+	
+	# risk contributions
+	round(100*portfolio.risk.contribution(weights.base, ia.base))
+	
+	#*****************************************************************
+	# Example from paper: Leverage
+	#*****************************************************************	
+	ia = list(
+		n = 2,
+		symbols = spl('LA,B'),
+		risk = c(5, 10) / 100,
+		correlation = matrix(c(1, 0.5, 0.5, 1), 2, 2),
+		expected.return = c(1,1)		
+	)
+	ia$cov = ia$correlation * (ia$risk %*% t(ia$risk))
+	
+	constraints = create.basic.constraints(ia$n, 0, 1, 1)
+	
+	sol = list(
+	EW = equal.weight.portfolio(ia, constraints),
+	ERC = equal.risk.contribution.portfolio(ia, constraints),
+	MV = min.var.portfolio(ia, constraints),
+	MDP = max.div.portfolio(ia, constraints),
+	MDP2 = max.div.portfolio1(ia, constraints)
+	)
+	
+	# weights
+	weights = t(sapply(sol,c))
+	round(100*weights)
+		
+	weights.base = cbind(weights[,1] / 4, weights[,2])	
+		weights.base = weights.base/rowSums(weights.base)
+	round(100*weights.base)
+	
+	
+	# risk contributions
+	round(100*portfolio.risk.contribution(weights.base, ia.base))
+	
+	#*****************************************************************
+	# Example from paper: Polico
+	#*****************************************************************	
+	ia = list(
+		n = 3,
+		symbols = spl('A,B,Polico'),
+		risk = c(20, 10, 11.46) / 100,
+		correlation = matrix(c(1, 0.5, 0.982, 0.5, 1, 0.655, 0.982, 0.655, 1), 3, 3),
+		expected.return = c(1,1,1)		
+	)
+	ia$cov = ia$correlation * (ia$risk %*% t(ia$risk))
+	
+	constraints = create.basic.constraints(ia$n, 0, 1, 1)
+	
+	sol = list(
+	EW = equal.weight.portfolio(ia, constraints),
+	ERC = equal.risk.contribution.portfolio(ia, constraints),
+	MV = min.var.portfolio(ia, constraints),
+	MDP = max.div.portfolio(ia, constraints),
+	MDP2 = max.div.portfolio1(ia, constraints)
+	)
+	
+	# weights
+	weights = t(sapply(sol,c))
+	round(100*weights)
+		
+	weights.base = cbind(weights[,1] +  1/2 * weights[,3], weights[,2] +  1/4 * weights[,3])	
+		weights.base = weights.base/rowSums(weights.base)
+	round(100*weights.base)
+	
+	# risk contributions
+	round(100*portfolio.risk.contribution(weights.base, ia.base))	
+}
 
 #*****************************************************************
 # Max Sharpe portfolio using non-linear solver, based on
@@ -1828,15 +2067,17 @@ min.var2 <- function(power.function = 1)
 #' @export 		
 static.group <- function(group) 
 {	
-	group = group
+	group = as.numeric(group)
 	function
 	(
 		ia			# input assumptions
 	)
 	{
-		return(group[ia$index])	
+		group[ia$index]
 	}		
 }		
+	
+	
 	
 	
 	# Find groups using clustering algorithm
@@ -2120,18 +2361,23 @@ dev.off()
 			if(!is.function(group.fn)) return(fn(ia, constraints))
 			
 			group = as.numeric(group.fn(ia))
-				
-			ngroups = max(group)
-			if(ngroups == 1) return(fn(ia, constraints))
+
+			groups = unique(group[!is.na(group)])
+				ngroups = len(groups)
+			if(ngroups == 1) return(fn.within(ia, constraints))
+			
 					
-			weight0 = rep(NA, ia$n)
+			weight0 = rep(0, ia$n)
+			
+			if(ngroups == 0) return(weight0)
+			group[is.na(group)] = Inf			
 				
 			# returns for each group			
 			hist.g = NA * ia$hist.returns[,1:ngroups]
 				
 			# compute weights within each group	
 			for(g in 1:ngroups) {
-				index = group == g
+				index = group == groups[g]
 				if( sum(index) == 1 ) {
 					weight0[index] = 1
 					hist.g[,g] = ia$hist.returns[, index, drop=F]
@@ -2156,9 +2402,9 @@ dev.off()
 			# find group weights
 			group.weights = match.fun(fn)(ia.g, constraints.g)
 					
-			# mutliply out group.weights by within group weights
+			# multiply out group.weights by within group weights			
 			for(g in 1:ngroups)
-					weight0[group == g] = weight0[group == g] * group.weights[g]
+					weight0[group == groups[g]] = weight0[group == groups[g]] * group.weights[g]
 			
 			weight0			
 		}
@@ -2562,7 +2808,8 @@ portfolio.allocation.helper <- function
 		
 	index.map = 1:ncol(ret)
    				
-	# construct portfolios			
+if(!is.na(start.i)) {
+	# construct portfolios
 	for( j in start.i:len(period.ends) ) {
 		i = period.ends[j]
 		
@@ -2634,6 +2881,7 @@ portfolio.allocation.helper <- function
 			
 		if( j %% log.frequency == 0) if(!silent) log(j, percent = (j - start.i) / (len(period.ends) - start.i))			
 	}
+}
 	
 	if( len(shrinkage.fns) == 1 ) {
 		names(weights) = gsub( paste('\\.', names(shrinkage.fns), '$', sep=''), '', names(weights) )

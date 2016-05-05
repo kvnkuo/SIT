@@ -88,7 +88,14 @@ bt.merge <- function
 
 
 ###############################################################################
-# Prepare backtest data
+# Prepare backtest data enviroment
+#
+# it usually contains:
+# * b$symbolnames
+# * b$universe
+# * b$prices
+# * b - asset hist data
+#
 #' @export 
 ###############################################################################
 bt.prep <- function
@@ -96,7 +103,8 @@ bt.prep <- function
 	b,				# enviroment with symbols time series
 	align = c('keep.all', 'remove.na'),	# alignment type
 	dates = NULL,	# subset of dates
-	fill.gaps = F	# fill gaps introduced by merging
+	fill.gaps = F,	# fill gaps introduced by merging
+	basic = F		# control if xts object are created
 ) 
 {    
 	# setup
@@ -109,8 +117,8 @@ bt.prep <- function
 		out = bt.merge(b, align, dates)
 		
 		for( i in 1:nsymbols ) {
-			b[[ symbolnames[i] ]] = 
-				make.xts( coredata( b[[ symbolnames[i] ]] )[ out$date.map[,i],, drop = FALSE], out$all.dates)
+			temp = coredata( b[[ symbolnames[i] ]] )[ out$date.map[,i],, drop = FALSE]
+			b[[ symbolnames[i] ]] = iif(basic, temp, make.xts( temp, out$all.dates))
 		
 			# fill gaps logic
 			map.col = find.names('Close,Volume,Open,High,Low,Adjusted', b[[ symbolnames[i] ]])
@@ -140,6 +148,7 @@ bt.prep <- function
 	} else {
 		if(!is.null(dates)) b[[ symbolnames[1] ]] = b[[ symbolnames[1] ]][dates,]	
 		out = list(all.dates = index.xts(b[[ symbolnames[1] ]]) )
+		if(basic) b[[ symbolnames[1] ]] = coredata( b[[ symbolnames[1] ]] )
 	}
 
 	# dates
@@ -148,7 +157,7 @@ bt.prep <- function
 	# empty matrix		
 	dummy.mat = matrix(double(), len(out$all.dates), nsymbols)
 		colnames(dummy.mat) = symbolnames
-		dummy.mat = make.xts(dummy.mat, out$all.dates)
+		if(!basic) dummy.mat = make.xts(dummy.mat, out$all.dates)
 		
 	# weight matrix holds signal and weight information		
 	b$weight = dummy.mat
@@ -174,7 +183,8 @@ bt.prep.matrix <- function
 (
 	b,				# enviroment with symbols time series
 	align = c('keep.all', 'remove.na'),	# alignment type
-	dates = NULL	# subset of dates
+	dates = NULL,	# subset of dates
+	basic = F		# control if xts object are created	
 )
 {    
 	align = align[1]
@@ -204,7 +214,7 @@ bt.prep.matrix <- function
 	}
 	
 	# empty matrix		
-	dummy.mat = make.xts(b$Cl, b$dates)
+	dummy.mat = iif(basic, b$Cl, make.xts(b$Cl, b$dates))
 		
 	# weight matrix holds signal and weight information		
 	b$weight = NA * dummy.mat
@@ -277,7 +287,7 @@ bt.prep.remove.symbols <- function
 		b$weight = b$weight[, -index]
 		b$execution.price = b$execution.price[, -index]
 		
-		rm(list = b$symbolnames[index], envir = b)		
+		env.rm(b$symbolnames[index], b)
 		b$symbolnames = b$symbolnames[ -index]
 	}
 }
@@ -322,6 +332,7 @@ bt.prep.trim <- function
 	return(data.copy)
 }
  
+
 ###############################################################################
 # Helper function to backtest for type='share'
 #' @export 
@@ -339,7 +350,7 @@ bt.run.share <- function
 	capital = 100000,
 	commission = 0,
 	weight = b$weight,
-	dates = 1:nrow(b$prices)	
+	dates = 1:nrow(b$prices)
 ) 
 {
 	# make sure that prices are available, assume that
@@ -350,12 +361,10 @@ bt.run.share <- function
 	weight = mlag(weight, do.lag - 1)
 	do.lag = 1
 
-		
-	if(clean.signal) {
-		weight[] = (capital / prices) * bt.exrem(weight)
-	} else {
-		weight[] = (capital / prices) * weight
-	}
+	if(clean.signal)
+		weight[] = bt.exrem(weight)
+	weight = (capital / prices) * weight
+	
 	
 	bt.run(b,
 		trade.summary = trade.summary,
@@ -368,6 +377,7 @@ bt.run.share <- function
 		weight = weight,
 		dates = dates)	
 }
+
 
 ###############################################################################
 # Run backtest
@@ -462,10 +472,10 @@ bt.run <- function
 	weight = temp
 	
 	
-
 	# prepare output
-	bt = bt.summary(weight, ret, type, b$prices, capital, commission, dates.index)
-		bt$dates.index = dates.index 
+	bt = bt.summary(weight, ret, type, b$prices, capital, commission)
+		bt$dates.index = dates.index
+	bt = bt.run.trim.helper(bt, dates.index)
 
 	if( trade.summary ) bt$trade.summary = bt.trade.summary(b, bt)
 
@@ -484,6 +494,39 @@ bt.run <- function
 	return(bt)
 }
 
+# trim bt object, used internally
+#' @export 
+bt.run.trim.helper = function(bt, dates.index) {
+	n.dates = len(dates.index) 
+	for(n in ls(bt)) {
+		if( !is.null(dim(bt[[n]])) ) {
+			if( nrow(bt[[n]]) > n.dates )
+				bt[[n]] = bt[[n]][dates.index,,drop=F]
+		} else if( len(bt[[n]]) > n.dates )
+			bt[[n]] = bt[[n]][dates.index]			
+	}
+	
+	bt$equity = bt$equity / as.double(bt$equity[1])
+	bt$best = max(bt$ret)
+	bt$worst = min(bt$ret)
+	bt$cagr = compute.cagr(bt$equity)
+	
+	bt
+}
+
+
+###############################################################################
+#tic(11)		
+#for(j in 1:10)
+#	a = as.vector(prices)
+#toc(11)		
+#
+#tic(11)		
+#for(j in 1:10)
+#	a = coredata(prices)
+#toc(11)		
+# Interestingly coredata is a lot faster
+#
 ###############################################################################
 # Backtest summary
 #' @export 
@@ -495,8 +538,7 @@ bt.summary <- function
 	type = c('weight', 'share'),
 	close.prices,
 	capital = 100000,
-	commission = 0,	# cents / share commission
-	dates.index = 1:nrow(weight)
+	commission = 0	# cents / share commission
 ) 
 {
 	# cents / share commission
@@ -523,14 +565,6 @@ bt.summary <- function
 		else 
 			commission = list(cps = commission, fixed = 0.0, percentage = 0.0)	
 	}
-	
-	# subset dates
-	if(len(dates.index) != nrow(weight)) {
-		weight = weight[dates.index,,drop=F]
-		ret = ret[dates.index,,drop=F]
-		close.prices = close.prices[dates.index,,drop=F]	
-	}
-	
 	
 	type = type[1]
     n = nrow(ret)
@@ -791,8 +825,10 @@ compute.turnover <- function
 		portfolio.turnover[ rowSums( !is.na(bt$weight) & !is.na(mlag(bt$weight)) ) == 0 ] = NA
 	} else {
 		prices = mlag(b$prices[bt$dates.index,,drop=F])
-		# logic from bt.summary function				
-		cash = bt$capital - rowSums(bt$share * prices, na.rm=T)
+		
+		if( is.null(bt$cash) ) {
+			# logic from bt.summary function				
+			cash = bt$capital - rowSums(bt$share * prices, na.rm=T)
 		
 			# find trade dates
 			share.nextday = mlag(bt$share, -1)
@@ -804,6 +840,8 @@ compute.turnover <- function
 			totalcash = NA * cash
 				totalcash[index] = cash[index]
 			totalcash = ifna.prev(totalcash)
+		} else
+			totalcash = bt$cash
 		
 		portfolio.value = totalcash + rowSums(bt$share * prices, na.rm=T)
 		
@@ -835,6 +873,7 @@ compute.max.deviation <- function
 	max(abs(weight - repmat(target.allocation, nrow(weight), 1)))
 }
 
+
 ###############################################################################
 # Backtest Trade summary
 #' @export 
@@ -853,10 +892,113 @@ bt.trade.summary <- function
 	weight1 = mlag(weight, -1)
 	tstart = weight != weight1 & weight1 != 0
 	tend = weight != 0 & weight != weight1	
-		#tstart[1, weight[1,] != 0] = T
+		tstart[1, weight[1,] != 0] = T
 		n = nrow(weight)
 		tend[n, weight[n,] != 0] = T
-		tend[1, ] = F
+		#tend[1, ] = F
+		trade = ifna(tstart | tend, FALSE)
+	
+	# prices
+	prices = b$prices[bt$dates.index,,drop=F]
+	
+	# execution price logic
+	if( sum(trade) > 0 ) {
+		execution.price = coredata(b$execution.price[bt$dates.index,,drop=F])
+		prices1 = coredata(b$prices[bt$dates.index,,drop=F])
+		
+		prices1[trade] = iif( is.na(execution.price[trade]), prices1[trade], execution.price[trade] )
+		
+		# backfill pricess
+		prices1[is.na(prices1)] = ifna(mlag(prices1), NA)[is.na(prices1)]				
+		prices[] = prices1
+			
+		# get actual weights
+		weight = bt$weight
+	
+		# extract trades
+		symbolnames = b$symbolnames
+		nsymbols = len(symbolnames) 	
+		
+			ntrades = max(sum(tstart,na.rm=T), sum(tend,na.rm=T))
+		trades = matrix(NA,nr=ntrades,nc=7)
+			colnames(trades) = spl('date,symbol,weight,entry.date,exit.date,entry.price,exit.price')
+		itrade = 1
+		for( i in 1:nsymbols ) {	
+			tstarti = which(tstart[,i])
+			tendi = which(tend[,i])
+			
+#cat(colnames(data$prices)[i], len(tstarti), len(tendi), '\n')			
+			
+			if( len(tstarti) > 0 ) {
+				#if( len(tendi) < len(tstarti) ) tendi = c(tendi, nrow(weight))
+				if( len(tendi) > len(tstarti) ) tstarti = c(1, tstarti)
+				
+				ntrade = len(tstarti)
+				ntrade.index = itrade:(itrade+ntrade-1)
+				trades[ntrade.index,] = 
+					cbind((tstarti+1), i, coredata(weight[(tstarti+1), i]), 
+						tstarti, tendi, 
+						coredata(prices[tstarti, i]), coredata(prices[tendi,i])
+					)
+				itrade = itrade + ntrade 
+			}
+		}
+		
+		
+		# prepare output		
+		out = list()
+		out$stats = cbind(
+			bt.trade.summary.helper(trades),
+			bt.trade.summary.helper(trades[trades[, 'weight'] >= 0, ]),
+			bt.trade.summary.helper(trades[trades[, 'weight'] <0, ])
+		)
+		colnames(out$stats) = spl('All,Long,Short')
+		
+		dates = index(weight)
+		dates0 = format(dates, '%Y-%m-%d')
+		index = order(dates[trades[,'entry.date']])
+		
+		temp = matrix('',nr=nrow(trades),nc=8)
+			colnames(temp)=spl('symbol,weight,entry.date,exit.date,nhold,entry.price,exit.price,return')		
+		temp[,'symbol'] = symbolnames[trades[index,'symbol']]
+		temp[,'weight'] = round(100*trades[index,'weight'],1)
+		temp[,'entry.date'] = dates0[trades[index,'entry.date']]
+		temp[,'exit.date'] = dates0[trades[index,'exit.date']]
+		temp[,'nhold'] = as.numeric(dates[trades[index,'exit.date']] - dates[trades[index,'entry.date']])
+		temp[,'entry.price'] = round(trades[index,'entry.price'], 2)
+		temp[,'exit.price'] = round(trades[index,'exit.price'], 2)
+		temp[,'return'] = round(100*trades[index,'weight'] * (trades[index,'exit.price']/trades[index,'entry.price'] - 1),2)
+				
+		out$trades = temp				
+	}
+	
+	return(out)
+}
+
+
+
+###############################################################################
+# Backtest Trade summary
+#' @export 
+###############################################################################
+bt.trade.summary.old <- function
+(
+	b, 		# enviroment with symbols time series
+	bt		# backtest object
+)
+{    
+	if( bt$type == 'weight') weight = bt$weight else weight = bt$share
+	
+	out = NULL
+	
+	# find trades
+	weight1 = mlag(weight, -1)
+	tstart = weight != weight1 & weight1 != 0
+	tend = weight != 0 & weight != weight1	
+		tstart[1, weight[1,] != 0] = T
+		n = nrow(weight)
+		tend[n, weight[n,] != 0] = T
+		#tend[1, ] = F
 		trade = ifna(tstart | tend, FALSE)
 	
 	# prices
@@ -894,7 +1036,7 @@ bt.trade.summary <- function
 				trades = rbind(trades, 
 								cbind(i, weight[(tstarti+1), i], 
 								tstarti, tendi, tendi-tstarti,
-								as.vector(prices[tstarti, i]), as.vector(prices[tendi,i])
+								coredata(prices[tstarti, i]), coredata(prices[tendi,i])
 								)
 							)
 			}
@@ -1994,9 +2136,13 @@ bt.end.dates <- function
 #' @export 
 ###############################################################################
 bt.append.today <- function(b, data.today) {
-	tickers = data.today$Symbol
-	Yesterday = data.today$Yesterday	
-	data = make.stock.xts(read.xts(data.today, date.column=find.names('Date',data.today),format='%m/%d/%Y', decreasing=NULL))
+	date.column = find.names('Date',data.today)
+	valid.index = which(!is.na(data.today[,date.column,with=F]))	
+	data.today = data.today[valid.index]
+	
+	data = make.stock.xts(read.xts(data.today, date.column=date.column,format='%m/%d/%Y', decreasing=NULL))	
+		tickers = data.today$Symbol
+		Yesterday = data.today$Yesterday	
 	
 	# todo, better logic for merging Intraday and EOD data
 	for(i in 1:len(tickers)) {
