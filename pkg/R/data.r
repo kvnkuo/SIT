@@ -1,22 +1,23 @@
 ###############################################################################
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# This software is provided 'as-is', without any express or implied
+# warranty. In no event will the authors be held liable for any damages
+# arising from the use of this software.
+# 
+# Permission is granted to anyone to use this software for any purpose,
+# including commercial applications, and to alter it and redistribute it
+# freely, subject to the following restrictions:
+# 
+# 1. The origin of this software must not be misrepresented; you must not
+#    claim that you wrote the original software. If you use this software
+#    in a product, an acknowledgment in the product documentation would be
+#    appreciated but is not required.
+# 2. Altered source versions must be plainly marked as such, and must not be
+#    misrepresented as being the original software.
+# 3. This notice may not be removed or altered from any source distribution.
 ###############################################################################
 # Collection of routines to work with data
-# Copyright (C) 2011  Michael Kapler
 #
-# For more information please visit my blog at www.SystematicInvestor.wordpress.com
-# or drop me a line at TheSystematicInvestor at gmail
+# For more information please email at TheSystematicInvestor at gmail
 ###############################################################################
 
 #' @export 
@@ -134,7 +135,15 @@ extract.table.from.webpage <- function
 (
   txt,    # source text of webpage
   marker=NA,  # key-phrase(s) located in the table to extract
+  
   has.header=T,# flag if table has a header
+  has.rownames=F,# flag if table has row names
+	
+  remove.empty.cols=F,# flag to remove columns with empty name
+  remove.empty.rows=F,# flag to remove rows with empty name
+	
+  convert2num = F,# flag to convert matrix to numeric only
+    
   end.marker=NA # additional end of token marker(s)
 )
 {
@@ -185,18 +194,87 @@ extract.table.from.webpage <- function
     temp = lapply( strsplit(temp, ';row;'), strsplit, ';col;')  
     n = max( sapply(temp[[1]], function(x) len(x)) )
     temp = t( sapply(temp[[1]], function(x) x[1:n]) )
-    
-    if(has.header) {
-      colnames(temp) = trim(temp[(has.header + 0), ])
-      temp = temp[-c(1:(has.header + 0)), ,drop=F]
-    }
-
+	
+	temp = extract.table(temp, has.header, has.rownames, remove.empty.cols, remove.empty.rows, convert2num)
   }, error = function(ex) {
     temp <<- txt
   }, finally = {
     return(temp)
   })
 }
+  
+  
+###############################################################################
+# mat2num
+# convert given matrix to numeric only
+# keep the column and row names of the original matrix
+#' @export 
+###############################################################################
+mat2num = function
+(
+	data
+) 
+{
+	temp = as.matrix(data)
+	temp = gsub(pattern = '$', replacement = '', temp, perl = TRUE) 
+	temp = gsub(pattern = ',', replacement = '', temp, perl = TRUE) 
+	temp = gsub(pattern = '%', replacement = '', temp, perl = TRUE) 
+ 
+	temp = as.numeric(temp) 
+		dim(temp) = dim(data)
+		colnames(temp) = colnames(data)
+		rownames(temp) = rownames(data)
+	temp
+}
+
+
+###############################################################################
+# extract.table
+# convert given matrix to numeric only
+# keep the column and row names of the original matrix
+#' @export 
+###############################################################################
+extract.table = function
+(
+	temp,
+	
+	has.header=T,# flag if table has a header
+	has.rownames=T,# flag if table has row names
+	
+	remove.empty.cols=T,# flag to remove columns with empty name
+	remove.empty.rows=T,# flag to remove rows with empty name
+	
+	convert2num = T# flag to convert matrix to numeric only
+)
+{
+	# the has.header & has.rownames can be specified as the number
+	if (has.header && has.rownames) {
+		colnames(temp) = trim(temp[(has.header + 0), ])
+		rownames(temp) = trim(temp[, (has.rownames + 0)])
+		temp = temp[-c(1:(has.header + 0)), -c(1:(has.rownames + 0)), drop = F]
+	} else if (has.rownames) {
+		rownames(temp) = trim(temp[, (has.rownames + 0)])
+		temp = temp[, -c(1:(has.rownames + 0)), drop = F]
+	} else if(has.header) {
+		colnames(temp) = trim(temp[(has.header + 0), ])
+		temp = temp[-c(1:(has.header + 0)), ,drop=F]
+	}	
+
+	# flags to remove entries for empty columns / rows names
+	if (remove.empty.cols && remove.empty.rows)
+		temp = temp[nchar(rownames(temp))>0, nchar(colnames(temp))>0]
+	else if (remove.empty.cols)
+		temp = temp[, nchar(colnames(temp))>0]
+	else if (remove.empty.rows)
+		temp = temp[nchar(rownames(temp))>0, ]
+
+	# convert to numbers
+	if (has.rownames)
+		temp = mat2num(temp)	   
+
+	temp	   
+}	
+
   
 ###############################################################################
 # Test for extract.table.from.webpage function
@@ -242,6 +320,47 @@ extract.table.from.webpage.test <- function()
 
 
 ###############################################################################
+# Test [SMF add](http://ogres-crypt.com/SMF/)
+###############################################################################
+extract.table.from.webpage.test.SMF <- function()
+{
+	ticker = 'SPY'
+	url = 'http://performance.morningstar.com/Performance/cef/trailing-total-returns.action?t='
+	url = paste0(url, ticker)
+
+	txt = get.url(url)
+
+	temp = extract.table.from.webpage(txt, 'Total Return', has.header=F)
+		temp = extract.table(temp)
+
+	temp[,'1-Day']
+	temp['Rank in Category(NAV)',]
+
+  
+	# [smf-elements-22](http://ogres-crypt.com/SMF/Elements/smf-elements-22.txt)
+	# Barchart Momentum
+	url = 'https://core-api.barchart.com/v1/momentum/get?raw=1&fields=exchange,high52w,low52w,newHighs,newLows,advancingVolume,unchangedVolume,decliningVolume,advancingIssues,percentAdvancingIssues,unchangedIssues,percentUnchangedIssues,decliningIssues,percentDecliningIssues&exchanges=NASDAQ,NYSE,OTC,AMEX'
+	txt = get.url(url)
+
+	require(jsonlite)
+	data = fromJSON(txt)
+		temp = data$data
+		extract.table(temp[, colnames(temp)!='raw'], has.header=F)
+	
+	# Yahoo Portfolio View
+	url = 'https://query1.finance.yahoo.com/v7/finance/quote?fields=symbol,longName,shortName,regularMarketPrice,regularMarketTime,regularMarketChange,regularMarketDayHigh,regularMarketDayLow,regularMarketPrice,regularMarketOpen,regularMarketVolume,averageDailyVolume3Month,marketCap,bid,ask,dividendYield,dividendsPerShare,exDividendDate,trailingPE,priceToSales,targetPriceMean&formatted=false&symbols=~~~~~'
+	ticker = 'IBM,DIS'
+	url = sub('~~~~~', ticker, url)
+
+	txt = get.url(url)
+
+	data = fromJSON(txt)
+		temp = data$quoteResponse$result
+		t(temp)
+}
+
+
+###############################################################################
 # Pricing Zero Coupon Bond (i.e. yield to price)
 # http://thinkanddone.com/finance/valuation-of-zero-coupon-bonds.html
 #' @export 
@@ -260,6 +379,13 @@ PricingZeroCouponBond <- function
 # Convert Historical TBills rates to Total Returns
 # http://timelyportfolio.blogspot.com/2011/04/historical-sources-of-bond-returns_17.html
 # http://timelyportfolio.blogspot.ca/2012/11/cashopportunity-lost-or-opportunity.html
+#
+# [S&P500 and 10yr TReasurey returns since 1928](http://people.stern.nyu.edu/adamodar/pc/datasets/histret.xls)
+# http://pages.stern.nyu.edu/~adamodar/New_Home_Page/datafile/histretSP.html
+# Another example to compute Return on bond =  
+# * Yield at start of the year plus
+# * 10YR bond price change given the change in Yield
+# http://people.stern.nyu.edu/adamodar/pc/datasets/
 #' @export 
 ###############################################################################
 processTBill <- function 
@@ -749,8 +875,89 @@ getQuote.google.xml <- function(tickers) {
   out
 }
   
+  
+###############################################################################
+# Get the latest prices from the Bigcharts:
+# http://bigcharts.marketwatch.com/quotes/multi.asp?view=q&msymb=MSFT+AAPL+IBM
+#' @export 
+###############################################################################
+#get.bigcharts.quote('ibm')
+#get.bigcharts.quote('ibm,msft,c')
+get.bigcharts.quote = function(symbolnames = spl('ibm,msft')) {
+	# download
+	url = paste0('http://bigcharts.marketwatch.com/quotes/multi.asp?view=q&msymb=',join(spl(symbolnames),'+'))
+	txt = get.url(url)
+
+	# extract
+	data = extract.table.from.webpage(txt, 'Change')
+		colnames(data) = tolower(trim( colnames(data) ))
+		data = trim(data)
+		
+	keep.index = nchar(data[,'symbol']) > 0
+		data = data[keep.index,,drop=F]
+		datan = mat2num(data)
+	
+	# xts
+	temp = cbind(
+		Open = datan[,'last'] + datan[,'change'],
+		High = datan[,'high'],
+		Low = datan[,'low'],
+		Close = datan[,'last'],
+		Volume = datan[,'volume'],
+		Adjusted = datan[,'last']
+		)		
+	date = strptime( paste(format(Sys.Date(), '%Y-%m-%d'), data[,'time']), '%Y-%m-%d %I:%M %p')
+	temp = make.xts(temp, order.by = date)
+	
+	out = list()
+	for(i in 1:nrow(data))
+		out[[ data[i,'symbol'] ]] = temp[i,]
+
+	out
+}		
+		
+
+###############################################################################
+# Get the latest prices from the Barcharts:
+# https://www.barchart.com/stocks/quotes/MSFT
+#' @export 
+###############################################################################
+#get.barcharts.quote('ibm')
+get.barcharts.quote = function(ticker = 'ibm') {
+	# download
+	url = paste0('https://www.barchart.com/stocks/quotes/', ticker)
+	txt = get.url(url)
+
+	# extract
+	token = extract.token(txt, '<div class="bc-quote-overview row",data-ng-init,init\\(', "\\)'>")
+	require(jsonlite)
+	data = fromJSON(paste('[',token,']'))
+	
+	ticker = data[[1]]
+	temp = data[[4]]$raw
+	temp = cbind(
+		Open = temp$openPrice,
+		High = temp$highPrice,
+		Low = temp$lowPrice,
+		Close = temp$lastPrice,
+		Volume = temp$volume,
+		Adjusted = temp$lastPrice
+		)		
+	date = Sys.Date()
+	temp = make.xts(temp, order.by = date)
+
+	out = list()
+	out[[ ticker ]] = temp
+	out
+}		
+
+		
 ###############################################################################
 # Download historical intraday prices from Google Finance
+#
+# [Best Example](http://stackoverflow.com/questions/15609334/how-to-download-intraday-stock-market-data-with-r)
+# as.POSIXct(1357828200-300*60, origin = '1970-01-01')
+#
 # http://www.mathworks.com/matlabcentral/fileexchange/32745-get-intraday-stock-price
 # http://www.mathworks.com/matlabcentral/fileexchange/36115-volume-weighted-average-price-from-intra-daily-data
 # http://www.codeproject.com/KB/IP/google_finance_downloader.aspx
@@ -768,21 +975,42 @@ getSymbol.intraday.google <- function
 ) 
 {
   # download Key Statistics from yahoo  
-  url = paste('http://www.google.com/finance/getprices?q=', Symbol,
+  url = paste('https://finance.google.com/finance/getprices?q=', Symbol,
     '&x=', Exchange,
       '&i=', interval,
       '&p=', period,
       '&f=', 'd,o,h,l,c,v', sep='')
 
-  load.packages('data.table')
-  out = fread(url, stringsAsFactors=F)
+  txt = get.url(url)
+  #write(txt, file='1.txt')
+  #txt = read.file('google-spy-getprices.txt')
   
-  if(ncol(out) < 5) {
+  lines = spl(txt,'\n')
+  if(len(lines) < 7) {
     cat('Error getting data from', url, '\n')
     return(NULL)
   }
   
-    setnames(out, spl('Date,Open,High,Low,Close,Volume'))
+  marker = 'COLUMNS='
+  map = c(DATE='Date', CLOSE='Close', HIGH='High', LOW='Low', OPEN='Open', VOLUME='Volume')	
+  cols = map[ spl(gsub(marker, '', lines[ grep(marker,lines)[1] ])) ]
+    
+  marker = 'TIMEZONE_OFFSET='
+  index = grep(marker,lines)
+
+  load.packages('data.table')
+  out = c()  
+  for(i in 1:len(index)) {
+    end = iif( i == len(index), -1,  index[(i+1)] - index[i] - 1)
+    timezone.offset = as.double(gsub( marker, '', lines[index[i]] ))
+    out = rbind(out, getSymbol.intraday.google.parse(txt, interval, index[i], end, timezone.offset, cols) )
+  }
+  out
+}
+
+getSymbol.intraday.google.parse = function(txt, interval, start, end, timezone.offset, cols) {
+  out = fread(txt, stringsAsFactors = F, skip = start, nrows = end)
+    setnames(out, cols)  
   
   # date logic
   date = out$Date
@@ -793,24 +1021,104 @@ getSymbol.intraday.google <- function
     temp = ifna.prev(temp)
   date = temp + date * interval
     date[date.index] = temp[date.index] 
-  class(date) = c("POSIXt", "POSIXct")
-  
-  date = date - (as.double(format(date[1],'%H')) - 9)*60*60
+  #class(date) = c("POSIXt", "POSIXct")
+  #date = date - (as.double(format(date[1],'%H')) - 9)*60*60
+  date = as.POSIXct(date + timezone.offset*interval, origin = '1970-01-01')
   
   make.xts(out[,-1,with=F], date)
 }
 
+getSymbol.intraday.google.test = function() {
+	# plot intraday spy over last 20 days
+	data=getSymbol.intraday.google('SPY','NYSEARCA',period = '20d')
+
+	col.names = spl('black,blue')
+	cols = c(col.add.alpha(col.names[1],100), col.add.alpha(col.names[2],250))
+
+	ret = Cl(data) / mlag(Cl(data)) - 1
+		group = as.numeric(format(index(data),'%H%M'))
+		stat = tapply(ret,group,mean, na.rm=T)	
+			stat[1] = 0 # omit overnight return
+			
+		label = names(stat)
+			label = iif(nchar(label)<4, paste0('0',label), label)
+		dates = strptime(paste0('20170101 ', label, '01'), format='%Y%m%d %H%M%S')
+		equity = 100*(cumprod(1+stat)-1)
+			equity = xts(equity, dates)	
+		plota(equity, type='l', col = cols[1], lwd=5, LeftMargin=3)
+		
+	# 2nd axis
+	date = as.Date(index(ret))	
+		stat = ret[date == last(date)]
+		stat[1] = 0
+		dates = strptime(paste0('20170101 ', format(index(stat),'%H%M'), '01'), format='%Y%m%d %H%M%S')
+		equity = 100*(cumprod(1+stat)-1)
+			equity = xts(coredata(equity), dates)	
+			
+		plota2Y(equity, las=1, col=cols[2], col.axis = cols[2])
+			plota.lines(equity, type='l', col = cols[2])		
+		plota.legend('20D Avg(rhs),Today(lhs)', col.names)
+		
+		  
+#!!! add chart for trutrn intrday vs overnight!!!
+}
 
 ###############################################################################
 # getSymbols interface to Yahoo today's delayed qoutes
 # based on getQuote.yahoo from quantmod package
+#
+# http://www.financialwisdomforum.org/gummy-stuff/Yahoo-data.htm
+# https://github.com/joshuaulrich/quantmod/blob/master/R/getQuote.R
+#
+# getQuote.yahoo.info('DJP,IEF,KIE,RHS')
+#
 #' @export 
-###############################################################################            
-getQuote.yahoo.today <- function(Symbols) {
+###############################################################################   
+getQuote.yahoo.info <- function(Symbols, fields = c(
+	Name='Name',
+	Symbol='Symbol',
+	Time='Last Trade Time',
+	Date='Last Trade Date',
+	Close='Last Trade (Price Only)',
+	Volume='Volume',
+	AvgVolume='Average Daily Volume',
+	Yesterday='Previous Close'
+	),
+	load.hist = T
+) {
+	Symbols = spl(Symbols)
+	out = getQuote.yahoo.today(Symbols, fields)
+		out = as.data.frame.matrix(out)
+		rownames(out) = out$Symbol
+
+	if(!load.hist) return(out)
+	
+	data = env()
+	getSymbols(Symbols, src = 'yahoo', from = '1980-01-01', env = data, auto.assign = T)	
+
+	out$Start = bt.start.dates(data)[out$Symbol,]	
+	out
+}
+
+
+#' @export 
+getQuote.yahoo.today <- function(Symbols, fields = c(
+	Name='Name',
+	Symbol='Symbol',
+	Time='Last Trade Time',
+	Date='Last Trade Date',
+	Open='Open',
+	High='Days High',
+	Low='Days Low',
+	Close='Last Trade (Price Only)',
+	Volume='Volume',
+	Yesterday='Previous Close'
+	)
+) {
   require('data.table')
-    what = yahooQF(names = spl('Name,Symbol,Last Trade Time,Last Trade Date,Open,Days High,Days Low,Last Trade (Price Only),Volume,Previous Close'))
-    names = spl('Name,Symbol,Time,Date,Open,High,Low,Close,Volume,Yesterday')
-    
+    what = yahooQF(names = fields)
+    names = names(fields)
+    Symbols = spl(Symbols)
     all.symbols = lapply(seq(1, len(Symbols), 100), function(x) na.omit(Symbols[x:(x + 99)]))
     out = c()
     
@@ -1186,19 +1494,48 @@ DEXSZUS     Switzerland/U.S.
 
 ###############################################################################
 # Download Strategic Portfolios from wealthsimple.com
+# https://help.wealthsimple.com/hc/en-ca/sections/115000097507-Portfolio-Features-and-Performance
 # 
+#https://help.wealthsimple.com/hc/en-ca/articles/214187018-How-has-the-Growth-portfolio-performed-
+#https://help.wealthsimple.com/hc/en-ca/articles/214187188-How-has-the-Balanced-portfolio-performed-
+#https://help.wealthsimple.com/hc/en-ca/articles/214880087-How-has-the-Conservative-portfolio-performed-
+#https://help.wealthsimple.com/hc/en-ca/articles/220391888-How-has-the-Growth-SRI-portfolio-performed-
+#https://help.wealthsimple.com/hc/en-ca/articles/220741607-How-has-the-Balanced-SRI-portfolio-performed-
+#https://help.wealthsimple.com/hc/en-ca/articles/220391588-How-has-the-Conservative-SRI-portfolio-performed-
+#
+#
 #http://faq.wealthsimple.com/article/121-how-has-the-risk-level-1-portfolio-performed
 #http://faq.wealthsimple.com/article/130-how-has-the-risk-level-10-portfolio-performed
 #http://faq.wealthsimple.com/article/127-how-has-the-risk-level-7-portfolio-performed
 #' @export 
 ###############################################################################     
-wealthsimple.portfolio = function(portfolio.number = 10) {
+wealthsimple.portfolio = function(
+	portfolio = spl('Conservative,Balanced,Growth'),
+	type = spl(',SRI')
+) 
+{
+	portfolio = portfolio[1]
+	type = type[1]
+	
+	map = c(
+		Growth = 'https://help.wealthsimple.com/hc/en-ca/articles/214187018-How-has-the-Growth-portfolio-performed-'
+		,Balanced = 'https://help.wealthsimple.com/hc/en-ca/articles/214187188-How-has-the-Balanced-portfolio-performed-'
+		,Conservative = 'https://help.wealthsimple.com/hc/en-ca/articles/214880087-How-has-the-Conservative-portfolio-performed-'
+		,GrowthSRI = 'https://help.wealthsimple.com/hc/en-ca/articles/220391888-How-has-the-Growth-SRI-portfolio-performed-'
+		,BalancedSRI = 'https://help.wealthsimple.com/hc/en-ca/articles/220741607-How-has-the-Balanced-SRI-portfolio-performed-'
+		,ConservativeSRI='https://help.wealthsimple.com/hc/en-ca/articles/220391588-How-has-the-Conservative-SRI-portfolio-performed-'
+	)
+	
 	# download
-	url = paste0('http://faq.wealthsimple.com/article/', 120+portfolio.number, '-how-has-the-risk-level-',portfolio.number,'-portfolio-performed')
-	txt = join(readLines(url))
-  
+	url = map[ paste0(portfolio,type) ]
+	txt = get.url(url)
+
 	# extract
-	temp = extract.table.from.webpage(txt, 'Breakdown', has.header = F)
+	# [Removing non-ASCII characters from data files](https://stackoverflow.com/questions/9934856/removing-non-ascii-characters-from-data-files)
+	temp = iconv(txt, 'latin1', 'ASCII', sub='')
+	temp = extract.table.from.webpage(temp, 'Breakdown,tbody', has.header = F)
+		colnames(temp) = spl('name,ticker,description,weight')
+		info = temp
 
 	# parse
 	temp = gsub(pattern = '%', replacement = '', temp)
@@ -1206,22 +1543,25 @@ wealthsimple.portfolio = function(portfolio.number = 10) {
 	temp  = temp[!is.na(temp[,1]),]
 
 	# create output
-	value = as.numeric(temp[,2])
-	names(value) = temp[,1]
-	value
+	weight = as.numeric(temp[,2])
+		names(weight) = temp[,1]
+	lst(weight, info)	
 }
 
- 
+	
 wealthsimple.portfolio.test = function() {
 	# create list of all portolios
 	portfolios = list()
-	for(i in 1:10)
-		portfolios[[i]] = wealthsimple.portfolio(i)
+	for(i in spl('Conservative,Balanced,Growth'))
+		portfolios[[i]] = wealthsimple.portfolio(i)$weight
 		
-	portfolios = t(sapply(portfolios, identity))
-	
-	# look at evolution of mixes
-	plota.stacked(1:10, portfolios/100, flip.legend = T, type='s', xaxp=c(1,10,9), las=1,
+	tickers = lapply(portfolios, names)
+		tickers = unique( unlist( tickers ) )
+		
+	data = sapply(portfolios, function(w) ifna(w[tickers],0)/100)
+		rownames(data) = tickers
+		
+	plota.stacked(1:3, t(data), flip.legend = T, type='s', xaxp=c(1,3,2), las=1,
 		main='Wealthsimple Transition Matrix', xlab='Risk Portfolio')
 }	
 	
@@ -1640,7 +1980,7 @@ download.helper <- function(url,download) {
 
   filename = paste0(temp.folder, '/', basename(url))
   if(download || !file.exists(filename))
-    try(download.file(url, filename, mode='wb'), TRUE)
+    tryCatch({ download.file(url, filename, mode='wb') }, error = function(ex) cat('', file=filename))
   filename
 }
 
@@ -1716,6 +2056,7 @@ load.VXX.CBOE <- function() {
       temp = getSymbol.CBOE('VX', m, y)
       if(is.null(temp)) next    
       
+	  temp = temp[!is.na(index(temp))]
       temp = temp[temp$Settle > 0]
       if(nrow(temp)==0) next    
       if(len(temp[index,1])> 0)
@@ -1797,9 +2138,15 @@ reconstruct.VXX.CBOE <- function(exact.match=T) {
   # on roll it is simply future2's return
   index = ifna(mlag(dr) == 0, F)
   ret[index] = (x[,1] / mlag(x[,2]) - 1)[index]
+      
+  # [Backtest of VXX Volatility ETN From 2004 Including Yearly Fees](https://sixfigureinvesting.com/2013/11/backtest-on-vxx/)
+  af = 0.89 / 100
+  dc = c(NA,diff(data$dates))
   
   Close = cumprod(1+ifna(ret,0))
-  VXX = make.xts(cbind(Close,x,dt,dr,ret), data$dates)
+  CloseAF = cumprod( (1+ifna(ret,0)) * (1-af/365)^ifna(dc,0) )
+  
+  VXX = make.xts(cbind(Close,CloseAF,x,dt,dr,ret), data$dates)
   
   # VXZ Mid-Term: 4,5,6,7 months
   x  = extract.VXX.CBOE(data, 'Settle', 4:7, exact.match)
@@ -1811,9 +2158,15 @@ reconstruct.VXX.CBOE <- function(exact.match=T) {
   
   index = ifna(mlag(dr) == 0, F)
   ret[index] = (rowSums(x[,-4]) / mlag(rowSums(x[,-1])) - 1)[index]
-    
+
+  # [Backtest of VXX Volatility ETN From 2004 Including Yearly Fees](https://sixfigureinvesting.com/2013/11/backtest-on-vxx/)
+  af = 0.89 / 100
+  dc = c(NA,diff(data$dates))
+  
   Close = cumprod(1+ifna(ret,0))  
-  VXZ = make.xts(cbind(Close,x,dt,dr,ret), data$dates)
+  CloseAF = cumprod( (1+ifna(ret,0)) * (1-af/365)^ifna(dc,0) )
+  
+  VXZ = make.xts(cbind(Close,CloseAF,x,dt,dr,ret), data$dates)
   
   # debug
   # plota(VXZ,type='l',lwd=2) 
@@ -1923,7 +2276,7 @@ data.ft.index.members = function
 	# if NOT forced to download and file exists and file is less than 30 days old
 	if( !force.download && 
 		file.exists(data.filename) &&
-		as.numeric(Sys.Date() - file.mtime(data.filename)) <= data.keep.days
+		as.numeric(Sys.Date() - as.Date(file.mtime(data.filename))) <= data.keep.days
 	) {
 		load(file=data.filename)
 		return(data)
@@ -1957,9 +2310,9 @@ data.ft.index.members = function
 	nfound = str_match(token,' data-ajax-paging-total-rows="([0-9]+)">')[2]
 		nfound = as.numeric(nfound)
 
-	data = matrix('',nr=nfound,nc=5)
-		colnames(data) = spl('Name,Symbol,LastPrice,TodayChange,YearChange')
-	data[1:nstep,] = temp[,1:5]
+	data = matrix('',nr=nfound,nc=2)
+		colnames(data) = spl('Name,Symbol') #spl('Name,Symbol,LastPrice,TodayChange,YearChange')
+	data[1:nstep,] = temp[,1:2]
 		
 	#[PhantomJS](http://stackoverflow.com/questions/15739263/phantomjs-click-an-element)
 	#[Short R tutorial: Scraping Javascript Generated Data with R](https://www.datacamp.com/community/tutorials/scraping-javascript-generated-data-with-r)	
@@ -2000,17 +2353,15 @@ data.ft.index.members = function
 
 		temp = extract.table.from.webpage(temp, has.header=F)
 			
-		data[istart:min(istart+nstep-1,nfound),] = temp[,1:5]
+		data[istart:min(istart+nstep-1,nfound),] = temp[,1:2]
 	}
 
-	# only compare Name,Symbol
-	if( !force.download && file.exists(data.filename) && requireNamespace('flock', quietly = T) ) {
+	if( file.exists(data.filename) && requireNamespace('ftouch', quietly = T) ) {
 		data.copy = data
 		load(file=data.filename)
 		
-		comp.index = spl('Name,Symbol')
-		if( all.equal(data.copy[,comp.index],data[,comp.index]) ) {
-			flock::touch(data.filename)
+		if( all.equal(data.copy, data) ) {
+			ftouch::touch(data.filename)
 			return(data) 
 		}
 	}		
@@ -2030,7 +2381,7 @@ data.ft.index.members = function
 #	# if NOT forced to download and file exists and file is less than 30 days old
 #	if( !force.download && 
 #		file.exists(data.filename) &&
-#		as.numeric(Sys.Date() - file.mtime(data.filename)) <= data.keep.days
+#		as.numeric(Sys.Date() - as.Date(file.mtime(data.filename))) <= data.keep.days
 #	) {
 #		load(file=data.filename)
 #		return(data)
@@ -2038,14 +2389,12 @@ data.ft.index.members = function
 #
 # Once data is downloaded check if needs to be saved
 #
-#	# only compare Name,Symbol
-#	if( !force.download && file.exists(data.filename) && requireNamespace('flock', quietly = T) ) {
+#	if( file.exists(data.filename) && requireNamespace('ftouch', quietly = T) ) {
 #		data.copy = data
 #		load(file=data.filename)
 #		
-#		comp.index = spl('Name,Symbol')
-#		if( all.equal(data.copy[,comp.index],data[,comp.index]) ) {
-#			flock::touch(data.filename)
+#		if( all.equal(data.copy,data) ) {
+#			ftouch::touch(data.filename)
 #			return(data) 
 #		}
 #	}		
@@ -2054,6 +2403,173 @@ data.ft.index.members = function
 #	data
 #}
 #
+
+
+###############################################################################
+# Data from https://www.ishares.com/us/products/etf-product-list
+#' 
+#' [Download File in R with POST while sending data](https://stackoverflow.com/questions/34864162/download-file-in-r-with-post-while-sending-data)
+#' 
+#' @examples
+#' \dontrun{ 
+#' data.ishares.universe()
+#' }
+#' @export
+#' @rdname DataFTFunctions
+###############################################################################
+data.ishares.universe = function
+(
+  portfolios="239726-239623-239458-239566-239706-239763-239708-239637-239710-239467-239774-239565-239665-239826-239707-239500-239725-239695-239718-239644-244049-239451-244050-239452-239728-239456-239454-239465-239561-239719-239626-239766-239699-239572-239463-239717-239714-239855-239712-239709-239455-239600-239627-239563-239762-239650-239764-239723-239536-239520-239482-239724-239466-259622-239775-239681-239659-239641-239612-239534-239773-239605-239615-239499-239628-239736-256101-239686-239522-239622-239601-239854-239464-239468-239674-268708-244048-239690-239619-239594-239511-239657-239607-239737-239744-239670-239512-239507-251614-239508-239685-239741-239524-239768-239772-239506-264617-239516-239423-239683-239513-239505-239746-258100-239713-239757-239460-239769-239453-239580-239664-239543-239514-239761-239715-239750-239510-239830-239756-251616-239758-239716-239540-272532-239502-239771-239450-264619-239740-239523-239457-259623-239519-239579-239720-259624-239678-244051-239501-239509-239731-239582-239503-239661-239667-264615-239765-239545-239680-239649-264623-239517-239751-239521-239729-239689-239705-239648-239588-239618-239528-239462-239688-239692-239669-239684-239730-239677-239581-270319-239675-239668-239739-239733-239696-239459-239518-239645-271054-239585-239767-239742-239671-239606-251465-239583-268704-239676-239586-239584-239753-239748-239430-251474-239745-239752-279626-239666-239550-239614-239424-239662-239722-239655-239734-268752-239526-258098-239610-271056-239831-239429-272342-239654-272341-239663-239629-254263-264507-239759-239587-239829-239461-239621-239551-258510-254551-239504-239672-239721-239642-239515-254553-272343-269394-272824-239609-239738-239529-239539-239544-239431-239527-254555-272340-260973-239660-264503-239537-271544-251476-239770-272822-239693-239443-272344-239735-272346-264273-264613-239656-273753-251477-272345-275382-239445-239653-276546-264542-264275-272112-264544-239613-264611-273746-276544-239570-239652-239651-239530-239525-239647-239620-260652-260975-239673-272819-254562-271540-258806-239552-283378-239691-271538-264127-239444-273743-273775-239638-275389-280052-273771-272825-275397-264606-253433-280049-272823-275384-271542-272821-273750-272820-273763-279286-270316-280048-280051-280050-275399-280769-273748-280771-273766-280774-273759-273768",
+  # above list must be updated manually :(
+  force.download = FALSE,
+  data.filename = 'ishares.universe.Rdata',
+  data.folder = paste(getwd(), 'data.ishares', sep='/'),
+  data.keep.days = 30
+)
+{
+	data.filename = file.path(data.folder, data.filename)
+	
+	# if NOT forced to download and file exists and file is less than 30 days old
+	if( !force.download && 
+		file.exists(data.filename) &&
+		as.numeric(Sys.Date() - as.Date(file.mtime(data.filename))) <= data.keep.days
+	) {
+		load(file=data.filename)
+		return(data)
+	}
+	
+	# make sure folder exists
+	dir.create(data.folder, F)
+	
+	# get data
+	url = 'https://www.ishares.com/us/product-screener-download.dl'
+		
+    library(curl)
+	h = new_handle()
+	handle_setopt(h, useragent = 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:36.0) Gecko/20100101 Firefox/36.0', referer='https://www.ishares.com/us/products/etf-product-list')
+	handle_setopt(h, customrequest = 'POST')
+	handle_setopt(h, postfields=paste0('productView=ishares&portfolios=', portfolios))
+
+	req = curl_fetch_memory(url, h)
+	if(req$status_code != 200) 
+		warning('error getting data, status_code:', req$status_code, 'for url:', url, 'content:', rawToChar(req$content))
+	
+    txt = rawToChar(req$content)
+	
+	# nchar(txt)
+	# write.file(txt,file='text.txt')
+	
+	# export data	
+	temp = gsub('<table>', '<table>', txt, perl = T, ignore.case = T)
+	temp = gsub('</table>', '</table>', temp, perl = T, ignore.case = T)
+	temp = gsub('<row>', '<tr>', temp, perl = T, ignore.case = T)
+	temp = gsub('</row>', '</tr>', temp, perl = T, ignore.case = T)
+	temp = gsub('<cell', '<td', temp, perl = T, ignore.case = T)
+	temp = gsub('</cell', '</td', temp, perl = T, ignore.case = T)
+	
+	temp = gsub('ss:MergeAcross="([0-9]+)"','>REP_\\1_<a', temp, perl=T)
+	temp = gsub('ss:Index="([0-9]+)"','>IDX_\\1_<a', temp, perl=T)
+	
+	data = extract.table.from.webpage(temp, 'Ticker', has.header=F)
+	
+	# process headers, ugly
+	library(stringr)
+	header = data[1,]	
+	index = str_match(header,'REP_([0-9]+)')[,2]
+		index = as.numeric(index)
+	header = gsub('REP_([0-9]+)_','', header, perl=T)
+		
+	temp = header
+	j = 1
+	for(i in 1:len(header))
+		if( !is.na(index[i]) ) {
+			temp[j:(j+index[i])] = header[i]
+			j = j + index[i] + 1
+		
+		} else j = j + 1
+	
+	data[1,] = temp
+	
+	header = data[2,]	
+	index = str_match(header,'IDX_([0-9]+)')[,2]
+		index = as.numeric(index)
+	header = gsub('IDX_([0-9]+)_','', header, perl=T)
+		
+	temp = rep('', len(header))
+	for(i in 1:len(header))
+		if( !is.na(index[i]) ) {
+			temp[index[i]] = header[i]
+		}
+		
+	data[2,] = temp
+	
+	# save data
+	colnames(data) = trim(apply(data[1:2,],2,join, ' '))
+		data = data[-c(1:2),]
+		
+	if( file.exists(data.filename) && requireNamespace('ftouch', quietly = T) ) {
+		data.copy = data
+		load(file=data.filename)
+		
+		if( all.equal(data.copy, data) ) {
+			ftouch::touch(data.filename)
+			return(data) 
+		}
+	}		
+	
+	save(data,file=data.filename)
+	data
+}
+
+
+###############################################################################
+# download Profile page from Yahoo Finance
+# 
+# [get industry/sector information from yahoo finance](https://ca.finance.yahoo.com/q/pr?s=RY.TO)
+# data.yahoo.profile('RY.TO')
+# 
+#' @export 
+###############################################################################
+data.yahoo.profile = function(symbol) {	
+	url = paste0('http://finance.yahoo.com/q/pr?s=', symbol)
+	txt = get.url(url)
+	
+	temp = extract.table.from.webpage(txt, 'Sector', has.header = F)
+		temp = gsub(':','',temp )
+		out = temp[,2]
+		names(out) = tolower(temp[,1])
+	out
+}
+
+
+
+###############################################################################
+# download URL with curl
+# 
+# get.url('http://money.cnn.com/data/dow30/')
+# 
+#' @export 
+###############################################################################
+get.url = function
+(
+	url,
+	useragent = 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:36.0) Gecko/20100101 Firefox/36.0',
+	referer = NULL
+)
+{
+    library(curl)
+	h = new_handle()
+	if( !is.null(useragent) ) handle_setopt(h, useragent = useragent)
+	if( !is.null(referer) ) handle_setopt(h, referer=referer)
+
+	req = curl_fetch_memory(url, h)
+	if(req$status_code != 200) 
+		warning('error getting data, status_code:', req$status_code, 'for url:', url, 'content:', rawToChar(req$content))
+	
+    txt = rawToChar(req$content)
+	txt
+}	
+	
 
 ###############################################################################
 # Load FOMC dates
@@ -2239,17 +2755,35 @@ edgar.info <- function(ticker)
 zacks.info <- function(ticker = 'IBM')
 {
   url = paste0('http://www.zacks.com/stock/research/', ticker, '/earnings-announcements')
-  txt = join(readLines(url))
- 
-  out = list()
-  require(jsonlite)
-  
-  for(i in spl('earnings,webcasts,revisions,splits,dividends,guidance')) {  
-  	data = extract.token(txt,paste0('<script>,window.app_data_', i, ',=,"data"'),'</script>')
-  	data = fromJSON(paste('{"data"', data))
-  	out[[i]] = data$data
-  }
-  out
+  txt = get.url(url)
+  #write(txt, file='1.txt')    
+    
+	require(jsonlite)
+	
+	# extract data
+	temp = extract.token(txt,'document.obj_data = ','};')
+	temp = fromJSON(paste(temp, '}'))
+	names(temp) = gsub('_table','',gsub('earnings_announcements_','',names(temp)))
+	data = temp
+
+	# extract headers
+	url = 'http://staticx.zacks.com/js/zacks/inline/company_event_detail.js'
+	info = get.url(url)
+	temp = extract.token(info,'var aryColTableChecked = ','};')	
+	temp = gsub('title','"title"',temp)
+	temp = gsub('class','"class"',temp)
+	temp = fromJSON(paste(temp, '}'))
+	names(temp) = gsub('_table','',gsub('earnings_announcements_','',names(temp)))
+	header = temp
+	
+	# set headers
+	for(i in names(data))
+		if( len(data[[ i ]]) > 0) {
+		temp = rep('',  ncol(data[[ i ]]))
+		temp[1:nrow(header[[ i ]])] = header[[ i ]][,1]
+		colnames(data[[ i ]]) = temp
+	}
+	data
 }
 
 
@@ -2284,6 +2818,20 @@ quantumonline.info <- function
 
 ###############################################################################	
 #' URL for various data providers
+#'
+#' [lookup ticker](http://www.quotemedia.com/portal/quote?qm_symbol=pot:ca)
+#' [check sector / industry info for any company](http://www.quotemedia.com/portal/profile?qm_symbol=m)
+#' 
+#' hist = read.xts(hist.quotes.url('IBM', '1992-11-01', '2016-05-05', 'quotemedia'))
+#' hist = read.xts(hist.quotes.url('HOU:CA', '1992-11-01', '2016-05-05', 'quotemedia'))
+#' hist = read.xts(get.url(hist.quotes.url('HOD:CA', '1992-11-01', '2016-05-05', 'quotemedia')))
+#'
+#' library(readr)
+#' hist = read.xts(read_csv(get.url(hist.quotes.url('HOU:CA', '1992-11-01', '2016-05-05', 'quotemedia')),,na=c('','NA','N/A')))
+#'
+#' http://web.tmxmoney.com/pricehistory.php?qm_page=90043&qm_symbol=HOD
+#' http://www.quotemedia.com/portal/history?qm_symbol=HOD:CA
+#'
 #' @export 
 ###############################################################################
 hist.quotes.url <- function
@@ -2621,19 +3169,42 @@ data.aqr = function
 ###############################################################################
 # Load/download CSI security master
 # http://www.csidata.com/factsheets.php?type=commodity&format=csv
+# (Stock Factsheet - TSX - Toronto Stock Exchange)[http://www.csidata.com/factsheets.php?type=stock&format=htmltable&exchangeid=82]
 #' @export 
 ###############################################################################
-load.csi.security.master = function(force.download = F) {
-	data.folder = paste(getwd(), 'csi.data', sep='/')
-	url = 'http://www.csidata.com/factsheets.php?type=commodity&format=csv'
-	filename = file.path(data.folder, 'commodityfactsheet.csv')
-
-	if( !file.exists(filename) || force.download) {
-		dir.create(data.folder, F)
-		download.file(url, filename,  mode = 'wb')
-	}
+data.csi.security.master = function
+(
+	type=c('commodity', 'stock'),
+	exchangeid=c(NA, 82),
+	force.download = FALSE,
+	data.filename = paste0(type[1],'.csv'),
+	data.keep.days = 30,
+	data.folder = 'data.csi'
+) 
+{
+	data.folder = paste(getwd(), data.folder, sep='/')
+	data.filename = file.path(data.folder, data.filename)
+		
+	# if NOT forced to download and file exists and file is less than 30 days old
+	if( !force.download && 
+		file.exists(data.filename) &&
+		as.numeric(Sys.Date() - as.Date(file.mtime(data.filename))) <= data.keep.days
+	) {
+		return(read.csv(data.filename))
+	}	
 	
-	read.csv(filename)
+	type = type[1]
+	exchangeid = exchangeid[1]
+	
+	if( is.na(exchangeid[1]) )	
+		url = paste0('http://www.csidata.com/factsheets.php?type=', type[1], '&format=csv')
+	else
+		url = paste0('http://www.csidata.com/factsheets.php?type=', type[1], '&format=csv&exchangeid=', exchangeid[1])
+	
+	dir.create(data.folder, F)
+	txt = get.url(url)
+	write(txt, file=data.filename)
+	read.csv(data.filename)
 }
 
 ###############################################################################
